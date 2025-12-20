@@ -4,7 +4,6 @@ use reqwest::StatusCode;
 use scraper::{Html, Selector};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::env;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -13,11 +12,10 @@ use urlencoding;
 pub const RELEVANCE_THRESHOLD: f32 = 0.05;
 pub const NETWORK_TIMEOUT: u64 = 30;
 
-pub fn search_online(query: &str) -> String {
-    let api_key =
-        env::var("GOOGLE_SEARCH_API_KEY").expect("GOOGLE_SEARCH_API_KEY not found in ~/.gemini");
-    let cx = env::var("GOOGLE_SEARCH_ENGINE_ID")
-        .expect("GOOGLE_SEARCH_ENGINE_ID not found in ~/.gemini");
+pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
+    if api_key.is_empty() || engine_id.is_empty() {
+        return "Google Search API is not configured. Please set GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID in ~/.aicli.conf".to_string();
+    }
 
     println!(
         "{} {}",
@@ -35,7 +33,7 @@ pub fn search_online(query: &str) -> String {
     let url = format!(
         "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}",
         api_key,
-        cx,
+        engine_id,
         urlencoding::encode(query)
     );
 

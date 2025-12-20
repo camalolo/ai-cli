@@ -12,11 +12,14 @@ use serde_json::{json, Value};
 use std::env;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use dirs;
+
+// Declare the config module
+mod config;
+use config::Config;
 
 #[derive(Parser)]
-#[command(name = "gemini-cli-rs")]
-#[command(about = "A proactive assistant for coding tasks")]
+#[command(name = "ai-cli")]
+#[command(about = "A provider-agnostic AI assistant for coding tasks")]
 struct Args {
     /// Single prompt to send to the LLM and exit
     #[arg(short, long)]
@@ -180,15 +183,14 @@ fn detect_shell_info() -> String {
 }
 
 struct ChatManager {
-    api_key: String,
+    config: Config, // Store configuration
     history: Vec<Value>, // Stores user and assistant messages
     cleaned_up: bool,
     system_instruction: String, // Stored separately for Gemini
-    smtp_server: String,
 }
 
 impl ChatManager {
-    fn new(api_key: String, smtp_server: String) -> Self {
+    fn new(config: Config) -> Self {
         let today = Local::now().format("%Y-%m-%d").to_string();
         let os_name = if cfg!(target_os = "windows") {
             "Windows"
@@ -207,11 +209,10 @@ impl ChatManager {
             today, os_name, shell_info
         );
         ChatManager {
-            api_key,
+            config,
             history: Vec::new(), // Start empty; system_instruction is separate
             cleaned_up: false,
             system_instruction,
-            smtp_server,
         }
     }
 
@@ -222,117 +223,143 @@ impl ChatManager {
     fn send_message(&mut self, message: &str) -> Result<Value, String> {
         let client = Client::new();
 
-        // Add user message to history
+        // Add user message to history in OpenAI format
         let user_message = json!({
             "role": "user",
-            "parts": [{"text": message}]
+            "content": message
         });
         self.history.push(user_message);
 
-        // Construct the body with system_instruction and full history
+        // Construct messages array with system instruction and history
+        let mut messages = Vec::new();
+        
+        // Add system instruction as first message
+        messages.push(json!({
+            "role": "system",
+            "content": &self.system_instruction
+        }));
+        
+        // Add conversation history
+        messages.extend_from_slice(&self.history);
+
+        // Construct the body in OpenAI-compatible format
         let body = json!({
-            "system_instruction": {"parts": [{"text": &self.system_instruction}]},
-            "contents": self.history.clone(), // Full history of user/assistant messages
+            "model": self.config.model,
+            "messages": messages,
             "tools": [
                 {
-                    "function_declarations": [
-                        {
-                            "name": "search_online",
-                            "description": "Searches the web for a given query. Use it to retrieve up to date information.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "query": {
-                                        "type": "string",
-                                        "description": "The search query",
-                                    }
-                                },
-                                "required": ["query"]
-                            }
-                        },
-                        {
-                            "name": "execute_command",
-                            "description": "Execute a system command. Use this for any shell task.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "command": {"type": "string"}
-                                },
-                                "required": ["command"]
-                            }
-                        },
-                        {
-                            "name": "send_email",
-                            "description": "Sends an email to a fixed address using SMTP.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "subject": {"type": "string", "description": "Email subject line"},
-                                    "body": {"type": "string", "description": "Email message body"}
-                                },
-                                "required": ["subject", "body"]
-                            }
-                        },
-                        {
-                            "name": "alpha_vantage_query",
-                            "description": "Query the Alpha Vantage API for stock/financial data",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "function": {
-                                        "type": "string",
-                                        "description": "The Alpha Vantage function (e.g., TIME_SERIES_DAILY)"
-                                    },
-                                    "symbol": {
-                                        "type": "string",
-                                        "description": "The stock symbol (e.g., IBM)"
-                                    }
-                                },
-                                "required": ["function", "symbol"]
-                            }
-                        },
-                        {
-                            "name": "scrape_url",
-                            "description": "Scrapes the content of a single URL",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "url": {
-                                        "type": "string",
-                                        "description": "The URL to scrape",
-                                    }
-                                },
-                                "required": ["url"]
-                            }
-                        },
-                        {
-                            "name": "file_editor",
-                            "description": "Edit files in the sandbox with sub-commands: read, write, search, search_and_replace, apply_diff.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "subcommand": {
-                                        "type": "string",
-                                        "description": "The sub-command to execute: read, write, search, search_and_replace, apply_diff",
-                                        "enum": ["read", "write", "search", "search_and_replace", "apply_diff"]
-                                    },
-                                    "filename": {
-                                        "type": "string",
-                                        "description": "The name of the file in the sandbox to operate on"
-                                    },
-                                    "data": {
-                                        "type": "string",
-                                        "description": "Content to write (for write), regex pattern (for search/search_and_replace), or diff content (for apply_diff)"
-                                    },
-                                    "replacement": {
-                                        "type": "string",
-                                        "description": "Replacement text for search_and_replace"
-                                    }
-                                },
-                                "required": ["subcommand", "filename"]
-                            }
+                    "type": "function",
+                    "function": {
+                        "name": "search_online",
+                        "description": "Searches the web for a given query. Use it to retrieve up to date information.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "The search query",
+                                }
+                            },
+                            "required": ["query"]
                         }
-                    ]
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "execute_command",
+                        "description": "Execute a system command. Use this for any shell task.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "command": {"type": "string"}
+                            },
+                            "required": ["command"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "send_email",
+                        "description": "Sends an email to a fixed address using SMTP.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "subject": {"type": "string", "description": "Email subject line"},
+                                "body": {"type": "string", "description": "Email message body"}
+                            },
+                            "required": ["subject", "body"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "alpha_vantage_query",
+                        "description": "Query the Alpha Vantage API for stock/financial data",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "function": {
+                                    "type": "string",
+                                    "description": "The Alpha Vantage function (e.g., TIME_SERIES_DAILY)"
+                                },
+                                "symbol": {
+                                    "type": "string",
+                                    "description": "The stock symbol (e.g., IBM)"
+                                }
+                            },
+                            "required": ["function", "symbol"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "scrape_url",
+                        "description": "Scrapes the content of a single URL",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "url": {
+                                    "type": "string",
+                                    "description": "The URL to scrape",
+                                }
+                            },
+                            "required": ["url"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "file_editor",
+                        "description": "Edit files in the sandbox with sub-commands: read, write, search, search_and_replace, apply_diff.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "subcommand": {
+                                    "type": "string",
+                                    "description": "The sub-command to execute: read, write, search, search_and_replace, apply_diff",
+                                    "enum": ["read", "write", "search", "search_and_replace", "apply_diff"]
+                                },
+                                "filename": {
+                                    "type": "string",
+                                    "description": "The name of the file in the sandbox to operate on"
+                                },
+                                "data": {
+                                    "type": "string",
+                                    "description": "Content to write (for write), regex pattern (for search/search_and_replace), or diff content (for apply_diff)"
+                                },
+                                "replacement": {
+                                    "type": "string",
+                                    "description": "Replacement text for search_and_replace"
+                                }
+                            },
+                            "required": ["subcommand", "filename"]
+                        }
+                    }
                 }
             ]
         });
@@ -340,9 +367,19 @@ impl ChatManager {
         let mut spinner = Spinner::new();
         spinner.start();
 
-        let response = client
-            .post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent")
-            .query(&[("key", &self.api_key)])
+        // Build request with configurable endpoint and authentication
+        let endpoint = self.config.get_api_endpoint();
+        let mut request = client.post(&endpoint);
+        
+        // Add authentication based on API type
+        if let Some(auth_header) = self.config.get_auth_header() {
+            request = request.header("Authorization", auth_header);
+        }
+        if let Some((key, value)) = self.config.get_auth_query() {
+            request = request.query(&[(key, value)]);
+        }
+        
+        let response = request
             .json(&body)
             .send()
             .map_err(|e| format!("API request failed: {}", e))?;
@@ -353,11 +390,11 @@ impl ChatManager {
             .json()
             .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-        // Add assistant response to history
-        if let Some(candidates) = response_json.get("candidates").and_then(|c| c.as_array()) {
-            for candidate in candidates {
-                if let Some(content) = candidate.get("content") {
-                    self.history.push(content.clone());
+        // Add assistant response to history in OpenAI format
+        if let Some(choices) = response_json.get("choices").and_then(|c| c.as_array()) {
+            for choice in choices {
+                if let Some(message) = choice.get("message") {
+                    self.history.push(message.clone());
                 }
             }
         }
@@ -380,16 +417,11 @@ impl ChatManager {
 }
 
 fn display_response(response: &Value) {
-    if let Some(candidates) = response.get("candidates").and_then(|c| c.as_array()) {
-        for candidate in candidates {
-            if let Some(parts) = candidate
-                .get("content")
-                .and_then(|c| c.get("parts").and_then(|p| p.as_array()))
-            {
-                for part in parts {
-                    if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                        println!("{}", text.color(Color::Yellow));
-                    }
+    if let Some(choices) = response.get("choices").and_then(|c| c.as_array()) {
+        for choice in choices {
+            if let Some(message) = choice.get("message") {
+                if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+                    println!("{}", content.color(Color::Yellow));
                 }
             }
         }
@@ -402,28 +434,34 @@ fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, 
 
     loop {
         let tool_calls: Vec<(String, Value)> = current_response
-            .get("candidates")
+            .get("choices")
             .and_then(|c| c.as_array())
             .unwrap_or(&vec![])
             .iter()
-            .flat_map(|candidate| {
-                candidate
-                    .get("content")
-                    .and_then(|c| c.get("parts"))
-                    .and_then(|p| p.as_array())
-                    .map(|parts| {
-                        parts
+            .flat_map(|choice| {
+                choice
+                    .get("message")
+                    .and_then(|m| m.get("tool_calls"))
+                    .and_then(|tc| tc.as_array())
+                    .map(|tool_calls| {
+                        tool_calls
                             .iter()
-                            .filter_map(|part| {
-                                part.get("functionCall").map(|fc| {
-                                    let name = fc
-                                        .get("name")
-                                        .and_then(|n| n.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let args = fc.get("args").cloned().unwrap_or(json!({}));
-                                    (name, args)
-                                })
+                            .filter_map(|tc| {
+                                let func = tc.get("function");
+                                let name = func
+                                    .and_then(|f| f.get("name"))
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let args = func
+                                    .and_then(|f| f.get("arguments"))
+                                    .and_then(|a| serde_json::from_str::<Value>(a.as_str()?).ok())
+                                    .unwrap_or(json!({}));
+                                if !name.is_empty() {
+                                    Some((name, args))
+                                } else {
+                                    None
+                                }
                             })
                             .collect::<Vec<_>>()
                     })
@@ -463,7 +501,15 @@ fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, 
                 "search_online" => {
                     let query = args.get("query").and_then(|q| q.as_str());
                     if let Some(q) = query {
-                        let result = search_online(q);
+                        let api_key = {
+                            let manager = chat_manager.lock().unwrap();
+                            manager.config.google_search_api_key.clone()
+                        };
+                        let engine_id = {
+                            let manager = chat_manager.lock().unwrap();
+                            manager.config.google_search_engine_id.clone()
+                        };
+                        let result = search_online(q, &api_key, &engine_id);
                         results.push(format!("[Tool result] search_online: {}", result));
                     } else {
                         results.push(
@@ -493,7 +539,7 @@ fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, 
                     if let (Some(subj), Some(bod)) = (subject, body) {
                         let smtp_server = {
                             let manager = chat_manager.lock().unwrap();
-                            manager.smtp_server.clone()
+                            manager.config.smtp_server.clone()
                         };
                         let result = send_email(subj, bod, &smtp_server, debug);
                         results.push(format!("[Tool result] send_email: {}", result));
@@ -508,7 +554,11 @@ fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, 
                     let function = args.get("function").and_then(|f| f.as_str());
                     let symbol = args.get("symbol").and_then(|s| s.as_str());
                     if let (Some(func), Some(sym)) = (function, symbol) {
-                        match alpha_vantage_query(func, sym) {
+                        let api_key = {
+                            let manager = chat_manager.lock().unwrap();
+                            manager.config.alpha_vantage_api_key.clone()
+                        };
+                        match alpha_vantage_query(func, sym, &api_key) {
                             Ok(result) => results.push(format!(
                                 "[Tool result] alpha_vantage_query: {}",
                                 result
@@ -585,37 +635,51 @@ fn interactive_shell() -> String {
 fn main() {
     let args = Args::parse();
 
-    let home_dir = dirs::home_dir()
-        .expect("Could not determine home directory")
-        .to_string_lossy()
-        .to_string();
-    dotenv::from_path(format!("{}/.gemini.conf", home_dir)).ok();
-    let api_key = env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY not found in ~/.gemini.conf");
-    let smtp_server = env::var("SMTP_SERVER_IP").unwrap_or_else(|_| "localhost".to_string());
+    // Load configuration
+    let config = match Config::load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            println!("{}", format!("Error: {}", e).color(Color::Red));
+            std::process::exit(1);
+        }
+    };
 
-    // Debug output for SMTP configuration
+    // Debug output for configuration
     if args.debug {
+        config.display_summary();
         println!("{}", "=== SMTP Configuration ===".color(Color::Cyan));
-        println!("SMTP_SERVER_IP: {}", smtp_server);
+        println!("SMTP_SERVER_IP: {}", config.smtp_server);
 
-        let smtp_username = env::var("SMTP_USERNAME").unwrap_or_else(|_| "<not set>".to_string());
-        let smtp_password = if env::var("SMTP_PASSWORD").is_ok() {
-            "***masked***".to_string()
-        } else {
+        let smtp_username = if config.smtp_username.is_empty() {
             "<not set>".to_string()
+        } else {
+            config.smtp_username.clone()
+        };
+        let smtp_password = if config.smtp_password.is_empty() {
+            "<not set>".to_string()
+        } else {
+            "***masked***".to_string()
         };
         println!("SMTP_USERNAME: {}", smtp_username);
         println!("SMTP_PASSWORD: {}", smtp_password);
 
-        let destination_email = env::var("DESTINATION_EMAIL").unwrap_or_else(|_| "<not set>".to_string());
-        let sender_email = env::var("SENDER_EMAIL").unwrap_or_else(|_| "<not set>".to_string());
+        let destination_email = if config.destination_email.is_empty() {
+            "<not set>".to_string()
+        } else {
+            config.destination_email.clone()
+        };
+        let sender_email = if config.sender_email.is_empty() {
+            "<not set>".to_string()
+        } else {
+            config.sender_email.clone()
+        };
         println!("DESTINATION_EMAIL: {}", destination_email);
         println!("SENDER_EMAIL: {}", sender_email);
         println!("{}", "==========================".color(Color::Cyan));
         println!();
     }
 
-    let chat_manager = Arc::new(Mutex::new(ChatManager::new(api_key, smtp_server)));
+    let chat_manager = Arc::new(Mutex::new(ChatManager::new(config)));
     let chat_manager_clone = Arc::clone(&chat_manager);
 
     ctrlc::set_handler(move || {
@@ -629,7 +693,14 @@ fn main() {
     if let Some(prompt) = args.prompt {
         println!("{}", "Processing single prompt...".color(Color::Cyan));
         let response = match chat_manager.lock().unwrap().send_message(&prompt) {
-            Ok(resp) => resp,
+            Ok(resp) => {
+                if args.debug {
+                    println!("{}", "=== Raw Response ===".color(Color::Cyan));
+                    println!("{:?}", resp);
+                    println!("{}", "===================".color(Color::Cyan));
+                }
+                resp
+            },
             Err(e) => {
                 println!("{}", format!("Error: {}", e).color(Color::Red));
                 chat_manager.lock().unwrap().cleanup(false);
@@ -646,7 +717,7 @@ fn main() {
 
     println!(
         "{}",
-        "Welcome to Gemini Code! Chat with me (type 'exit' to quit, 'clear' to reset conversation)."
+        "Welcome to AI CLI! Chat with me (type 'exit' to quit, 'clear' to reset conversation)."
             .color(Color::Cyan)
             .bold()
     );
@@ -672,16 +743,7 @@ fn main() {
                 .history
                 .iter()
                 .filter_map(|msg| {
-                    msg.get("parts")
-                        .and_then(|parts| parts.as_array())
-                        .map(|parts_array| {
-                            parts_array
-                                .iter()
-                                .filter_map(|part| {
-                                    part.get("text").and_then(|t| t.as_str()).map(|s| s.len())
-                                })
-                                .sum::<usize>()
-                        })
+                    msg.get("content").and_then(|c| c.as_str()).map(|s| s.len())
                 })
                 .sum()
         };

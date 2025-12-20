@@ -2,6 +2,7 @@ use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use std::env;
+use std::time::Duration;
 
 pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> String {
     if debug {
@@ -10,19 +11,38 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
         println!("Subject: {}", subject);
         println!("Body length: {} characters", body.len());
     }
-
-    let recipient = match env::var("DESTINATION_EMAIL") {
+ 
+    // DEBUG: Check if DESTINATION_EMAIL is set
+    let destination_email_result = env::var("DESTINATION_EMAIL");
+    if debug {
+        println!("DESTINATION_EMAIL env var result: {:?}", destination_email_result);
+    }
+    
+    let recipient = match destination_email_result {
         Ok(val) => {
             if debug {
                 println!("Recipient: {}", val);
             }
             val
         },
-        Err(_) => return "DESTINATION_EMAIL environment variable not set. Please set it to the recipient's email address.".to_string(),
+        Err(e) => {
+            if debug {
+                println!("Failed to get DESTINATION_EMAIL: {}", e);
+                println!("Available env vars with DESTINATION: {:?}",
+                    env::vars().filter(|(k,_)| k.contains("DESTINATION")).collect::<Vec<_>>());
+                println!("Available env vars with EMAIL: {:?}",
+                    env::vars().filter(|(k,_)| k.contains("EMAIL")).collect::<Vec<_>>());
+            }
+            return "DESTINATION_EMAIL environment variable not set. Please set it to the recipient's email address.".to_string()
+        },
     };
 
     // For simplicity, assume sender is the same as recipient or a default
-    let sender = env::var("SENDER_EMAIL").unwrap_or_else(|_| recipient.clone());
+    let sender_result = env::var("SENDER_EMAIL");
+    if debug {
+        println!("SENDER_EMAIL env var result: {:?}", sender_result);
+    }
+    let sender = sender_result.unwrap_or_else(|_| recipient.clone());
     if debug {
         println!("Sender: {}", sender);
     }
@@ -50,13 +70,21 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
         // For localhost, try without auth
         SmtpTransport::builder_dangerous(smtp_server)
             .port(25)
+            .timeout(Some(Duration::from_secs(30)))
             .build()
     } else {
         if debug {
             println!("Using remote server configuration");
         }
         // For other servers, check for credentials
-        let creds = if let (Ok(username), Ok(password)) = (env::var("SMTP_USERNAME"), env::var("SMTP_PASSWORD")) {
+        let smtp_username_result = env::var("SMTP_USERNAME");
+        let smtp_password_result = env::var("SMTP_PASSWORD");
+        if debug {
+            println!("SMTP_USERNAME env var result: {:?}", smtp_username_result);
+            println!("SMTP_PASSWORD env var result: {:?}", smtp_password_result);
+        }
+        
+        let creds = if let (Ok(username), Ok(password)) = (smtp_username_result, smtp_password_result) {
             if debug {
                 println!("Found SMTP credentials for user: {}", username);
             }
@@ -78,7 +106,7 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
                         println!("SMTP relay created successfully, adding credentials...");
                     }
                     // Try port 25 first (plain SMTP), then fall back to 587 if needed
-                    let mailer = relay.port(25).credentials(creds).build();
+                    let mailer = relay.port(25).timeout(Some(Duration::from_secs(30))).credentials(creds).build();
                     if debug {
                         println!("SMTP transport created on port 25");
                     }
@@ -96,7 +124,7 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
                 println!("No SMTP credentials found, trying without authentication...");
             }
             // Try without authentication for local/trusted servers
-            match SmtpTransport::builder_dangerous(smtp_server).port(25).build() {
+            match SmtpTransport::builder_dangerous(smtp_server).port(25).timeout(Some(Duration::from_secs(30))).build() {
                 mailer => {
                     if debug {
                         println!("SMTP transport created without authentication");

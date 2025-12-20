@@ -1,11 +1,11 @@
 use colored::Color;
 use colored::Colorize;
 use reqwest::blocking::Client;
-use std::env;
 
-pub fn alpha_vantage_query(function: &str, symbol: &str) -> Result<String, String> {
-    let api_key =
-        env::var("ALPHA_VANTAGE_API_KEY").expect("ALPHA_VANTAGE_API_KEY not found in ~/.gemini");
+pub fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str) -> Result<String, String> {
+    if api_key.is_empty() {
+        return Err("ALPHA_VANTAGE_API_KEY not found in ~/.aicli.conf".to_string());
+    }
     let client = Client::new();
 
     let url = format!(
