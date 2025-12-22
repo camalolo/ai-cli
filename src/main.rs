@@ -5,12 +5,12 @@ use colored::{Color, Colorize};
 use ctrlc;
 #[allow(unused_imports)]
 use dotenv::from_path;
-use once_cell::sync::Lazy;
+
 use reqwest::blocking::Client;
 use std::io::{self, Write};
 use serde_json::{json, Value};
 use std::env;
-use std::path::PathBuf;
+
 use std::sync::{Arc, Mutex};
 
 // Declare the config module
@@ -39,146 +39,189 @@ mod command;
 mod email;
 mod alpha_vantage;
 mod file_edit;
-mod spinner; // Spinner module
+mod spinner;
+mod sandbox;
+mod http; // Spinner module
 
 use command::execute_command;
 use email::send_email;
 use alpha_vantage::alpha_vantage_query;
 use file_edit::file_editor;
 use crate::spinner::Spinner; // Import the Spinner
-
-static SANDBOX_ROOT: Lazy<String> = Lazy::new(|| {
-    let path = std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .to_string_lossy()
-        .to_string();
-
-    // On Windows, canonicalize() adds \\?\ prefix, remove it for display
-    #[cfg(target_os = "windows")]
-    {
-        if path.starts_with("\\\\?\\") {
-            path[4..].to_string()
-        } else {
-            path
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        path
-    }
-});
+use sandbox::SANDBOX_ROOT;
 
 const COMPILE_TIME: &str = build_time_local!("%Y-%m-%d %H:%M:%S");
 
-fn detect_shell_info() -> String {
-    // Try to detect the actual shell and its version
-    if cfg!(target_os = "windows") {
-        // Check for MSYS/MINGW environments first (Git Bash, MSYS2, etc.)
-        if let Ok(msystem) = env::var("MSYSTEM") {
-            if !msystem.is_empty() {
-                // We're in a MSYS/MINGW environment (Git Bash, MSYS2, etc.)
-                let system_name = match msystem.as_str() {
-                    "MINGW64" => "Git Bash (MINGW64)",
-                    "MINGW32" => "Git Bash (MINGW32)",
-                    "MSYS" => "MSYS",
-                    _ => "MSYS/MINGW",
-                };
-
-                // Try to get bash version
-                if let Ok(version_output) = std::process::Command::new("bash")
-                    .arg("--version")
-                    .output()
-                {
-                    if version_output.status.success() {
-                        let output = String::from_utf8_lossy(&version_output.stdout);
-                        if let Some(first_line) = output.lines().next() {
-                            return format!("{} - {}", system_name, first_line);
-                        }
-                    }
-                }
-                return system_name.to_string();
-            }
+fn process_execute_command(args: &Value) -> String {
+    let command = args.get("command").and_then(|c| c.as_str());
+    if let Some(cmd) = command {
+        println!("LLM wants to execute command: {} | Confirm execution? (y/n)", cmd.color(Color::Magenta));
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).expect("Failed to read input");
+        let input = input.trim().to_lowercase();
+        if input == "y" || input == "yes" {
+            println!("Executing command: {}", cmd.color(Color::Magenta));
+            let result = execute_command(cmd);
+            format!("[Tool result] execute_command: {}", result)
+        } else {
+            "[Tool result] execute_command: User rejected the command execution.".to_string()
         }
-
-        // Check if we're running under bash (could be Git Bash without MSYSTEM set)
-        if let Ok(shell) = env::var("SHELL") {
-            if shell.contains("bash") || shell.contains("sh") {
-                // Try to get bash version
-                if let Ok(version_output) = std::process::Command::new("bash")
-                    .arg("--version")
-                    .output()
-                {
-                    if version_output.status.success() {
-                        let output = String::from_utf8_lossy(&version_output.stdout);
-                        if let Some(first_line) = output.lines().next() {
-                            return format!("Git Bash - {}", first_line);
-                        }
-                    }
-                }
-                return "Git Bash".to_string();
-            }
-        }
-
-        // Check for PowerShell
-        if let Ok(powershell_path) = env::var("PSModulePath") {
-            if !powershell_path.is_empty() {
-                // Try to get PowerShell version
-                if let Ok(version_output) = std::process::Command::new("powershell")
-                    .arg("-Command")
-                    .arg("$PSVersionTable.PSVersion.ToString()")
-                    .output()
-                {
-                    if version_output.status.success() {
-                        let version = String::from_utf8_lossy(&version_output.stdout).trim().to_string();
-                        return format!("PowerShell {}", version);
-                    }
-                }
-                return "PowerShell".to_string();
-            }
-        }
-
-        // Default to cmd.exe
-        "Command Prompt (cmd.exe)".to_string()
     } else {
-        // On Unix-like systems, use SHELL environment variable
-        if let Ok(shell_path) = env::var("SHELL") {
-            // Extract shell name from path
-            let shell_name = std::path::Path::new(&shell_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("bash");
+        "[Tool error] execute_command: Missing 'command' parameter".to_string()
+    }
+}
 
-            // Try to get version for common shells
-            let version_cmd = match shell_name {
-                "bash" => Some(("bash", vec!["--version"])),
-                "zsh" => Some(("zsh", vec!["--version"])),
-                "fish" => Some(("fish", vec!["--version"])),
-                "tcsh" | "csh" => Some((shell_name, vec!["--version"])),
-                "ksh" => Some((shell_name, vec!["--version"])),
-                _ => None,
+fn process_search_online(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>) -> String {
+    let query = args.get("query").and_then(|q| q.as_str());
+    if let Some(q) = query {
+        let api_key_result = chat_manager.lock().map(|manager| manager.config.google_search_api_key.clone());
+        let engine_id_result = chat_manager.lock().map(|manager| manager.config.google_search_engine_id.clone());
+        match (api_key_result, engine_id_result) {
+            (Ok(api_key), Ok(engine_id)) => {
+                let result = search_online(q, &api_key, &engine_id);
+                format!("[Tool result] search_online: {}", result)
+            }
+            _ => "[Tool error] search_online: Failed to access configuration".to_string(),
+        }
+    } else {
+        "[Tool error] search_online: Missing 'query' parameter".to_string()
+    }
+}
+
+fn process_send_email(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool) -> String {
+    let subject = args.get("subject").and_then(|s| s.as_str());
+    let body = args.get("body").and_then(|b| b.as_str());
+
+    if let (Some(subj), Some(bod)) = (subject, body) {
+        let smtp_server_result = chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e)).map(|manager| manager.config.smtp_server.clone());
+        match smtp_server_result {
+            Ok(smtp_server) => match send_email(subj, bod, &smtp_server, debug) {
+                Ok(msg) => format!("[Tool result] send_email: {}", msg),
+                Err(e) => format!("[Tool error] send_email: {}", e),
+            },
+            Err(e) => format!("[Tool error] send_email: {}", e),
+        }
+    } else {
+        "[Tool error] send_email: Missing required parameters".to_string()
+    }
+}
+
+
+
+fn detect_shell_info() -> String {
+    if cfg!(target_os = "windows") {
+        detect_windows_shell()
+    } else {
+        detect_unix_shell()
+    }
+}
+
+fn detect_windows_shell() -> String {
+    // Check for MSYS/MINGW environments first (Git Bash, MSYS2, etc.)
+    if let Ok(msystem) = env::var("MSYSTEM") {
+        if !msystem.is_empty() {
+            // We're in a MSYS/MINGW environment (Git Bash, MSYS2, etc.)
+            let system_name = match msystem.as_str() {
+                "MINGW64" => "Git Bash (MINGW64)",
+                "MINGW32" => "Git Bash (MINGW32)",
+                "MSYS" => "MSYS",
+                _ => "MSYS/MINGW",
             };
 
-            if let Some((cmd, args)) = version_cmd {
-                if let Ok(version_output) = std::process::Command::new(cmd)
-                    .args(&args)
-                    .output()
-                {
-                    if version_output.status.success() {
-                        let output = String::from_utf8_lossy(&version_output.stdout);
-                        if let Some(first_line) = output.lines().next() {
-                            return first_line.to_string();
-                        }
+            // Try to get bash version
+            if let Ok(version_output) = std::process::Command::new("bash")
+                .arg("--version")
+                .output()
+            {
+                if version_output.status.success() {
+                    let output = String::from_utf8_lossy(&version_output.stdout);
+                    if let Some(first_line) = output.lines().next() {
+                        return format!("{} - {}", system_name, first_line);
                     }
                 }
             }
-
-            // Fallback to shell name
-            shell_name.to_string()
-        } else {
-            "bash".to_string()
+            return system_name.to_string();
         }
+    }
+
+    // Check if we're running under bash (could be Git Bash without MSYSTEM set)
+    if let Ok(shell) = env::var("SHELL") {
+        if shell.contains("bash") || shell.contains("sh") {
+            // Try to get bash version
+            if let Ok(version_output) = std::process::Command::new("bash")
+                .arg("--version")
+                .output()
+            {
+                if version_output.status.success() {
+                    let output = String::from_utf8_lossy(&version_output.stdout);
+                    if let Some(first_line) = output.lines().next() {
+                        return format!("Git Bash - {}", first_line);
+                    }
+                }
+            }
+            return "Git Bash".to_string();
+        }
+    }
+
+    // Check for PowerShell
+    if let Ok(powershell_path) = env::var("PSModulePath") {
+        if !powershell_path.is_empty() {
+            // Try to get PowerShell version
+            if let Ok(version_output) = std::process::Command::new("powershell")
+                .arg("-Command")
+                .arg("$PSVersionTable.PSVersion.ToString()")
+                .output()
+            {
+                if version_output.status.success() {
+                    let version = String::from_utf8_lossy(&version_output.stdout).trim().to_string();
+                    return format!("PowerShell {}", version);
+                }
+            }
+            return "PowerShell".to_string();
+        }
+    }
+
+    // Default to cmd.exe
+    "Command Prompt (cmd.exe)".to_string()
+}
+
+fn detect_unix_shell() -> String {
+    // On Unix-like systems, use SHELL environment variable
+    if let Ok(shell_path) = env::var("SHELL") {
+        // Extract shell name from path
+        let shell_name = std::path::Path::new(&shell_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("bash");
+
+        // Try to get version for common shells
+        let version_cmd = match shell_name {
+            "bash" => Some(("bash", vec!["--version"])),
+            "zsh" => Some(("zsh", vec!["--version"])),
+            "fish" => Some(("fish", vec!["--version"])),
+            "tcsh" | "csh" => Some((shell_name, vec!["--version"])),
+            "ksh" => Some((shell_name, vec!["--version"])),
+            _ => None,
+        };
+
+        if let Some((cmd, args)) = version_cmd {
+            if let Ok(version_output) = std::process::Command::new(cmd)
+                .args(&args)
+                .output()
+            {
+                if version_output.status.success() {
+                    let output = String::from_utf8_lossy(&version_output.stdout);
+                    if let Some(first_line) = output.lines().next() {
+                        return first_line.to_string();
+                    }
+                }
+            }
+        }
+
+        // Fallback to shell name
+        shell_name.to_string()
+    } else {
+        "bash".to_string()
     }
 }
 
@@ -477,46 +520,12 @@ fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, 
         for (func_name, args) in tool_calls {
             match func_name.as_str() {
                 "execute_command" => {
-                    let command = args.get("command").and_then(|c| c.as_str());
-                    if let Some(cmd) = command {
-                        println!("LLM wants to execute command: {} | Confirm execution? (y/n)", cmd.color(Color::Magenta));
-                        let mut input = String::new();
-                        std::io::stdin().read_line(&mut input).expect("Failed to read input");
-                        let input = input.trim().to_lowercase();
-                        if input == "y" || input == "yes" {
-                            println!("Executing command: {}", cmd.color(Color::Magenta));
-                            let result = execute_command(cmd);
-                            results.push(format!("[Tool result] execute_command: {}", result));
-                        } else {
-                            //println!("Command execution rejected by user.");
-                            results.push("[Tool result] execute_command: User rejected the command execution.".to_string());
-                        }
-                    } else {
-                        results.push(
-                            "[Tool error] execute_command: Missing 'command' parameter"
-                                .to_string(),
-                        );
-                    }
+                    let result = process_execute_command(&args);
+                    results.push(result);
                 }
                 "search_online" => {
-                    let query = args.get("query").and_then(|q| q.as_str());
-                    if let Some(q) = query {
-                        let api_key = {
-                            let manager = chat_manager.lock().unwrap();
-                            manager.config.google_search_api_key.clone()
-                        };
-                        let engine_id = {
-                            let manager = chat_manager.lock().unwrap();
-                            manager.config.google_search_engine_id.clone()
-                        };
-                        let result = search_online(q, &api_key, &engine_id);
-                        results.push(format!("[Tool result] search_online: {}", result));
-                    } else {
-                        results.push(
-                            "[Tool error] search_online: Missing 'query' parameter"
-                                .to_string(),
-                        );
-                    }
+                    let result = process_search_online(&args, chat_manager);
+                    results.push(result);
                 }
                 "scrape_url" => {
                     let url = args.get("url").and_then(|u| u.as_str());
@@ -533,22 +542,8 @@ fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, 
                     }
                 }
                 "send_email" => {
-                    let subject = args.get("subject").and_then(|s| s.as_str());
-                    let body = args.get("body").and_then(|b| b.as_str());
-
-                    if let (Some(subj), Some(bod)) = (subject, body) {
-                        let smtp_server = {
-                            let manager = chat_manager.lock().unwrap();
-                            manager.config.smtp_server.clone()
-                        };
-                        let result = send_email(subj, bod, &smtp_server, debug);
-                        results.push(format!("[Tool result] send_email: {}", result));
-                    } else {
-                        results.push(
-                            "[Tool error] send_email: Missing required parameters"
-                                .to_string(),
-                        );
-                    }
+                    let result = process_send_email(&args, chat_manager, debug);
+                    results.push(result);
                 }
                 "alpha_vantage_query" => {
                     let function = args.get("function").and_then(|f| f.as_str());
@@ -580,7 +575,8 @@ fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, 
                     let replacement = args.get("replacement").and_then(|r| r.as_str());
 
                     if let (Some(subcmd), Some(fname)) = (subcommand, filename) {
-                        let result = file_editor(subcmd, fname, data, replacement);
+                        let skip_confirmation = matches!(subcmd, "read" | "search"); // Only skip for non-destructive ops
+                        let result = file_editor(subcmd, fname, data, replacement, skip_confirmation);
                         results.push(format!("[Tool result] file_editor: {}", result));
                     } else {
                         results.push("[Tool error] file_editor: Missing required parameters 'subcommand' or 'filename'".to_string());
@@ -594,7 +590,7 @@ fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, 
 
         if !results.is_empty() {
             let combined_results = results.join("\n");
-            current_response = chat_manager.lock().unwrap().send_message(&combined_results)?;
+            current_response = chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e))?.send_message(&combined_results)?;
             display_response(&current_response);
         } else {
             break;
@@ -683,7 +679,10 @@ fn main() {
     let chat_manager_clone = Arc::clone(&chat_manager);
 
     ctrlc::set_handler(move || {
-        let mut manager = chat_manager_clone.lock().unwrap();
+        let mut manager = chat_manager_clone.lock().unwrap_or_else(|e| {
+            eprintln!("Failed to acquire chat manager lock: {}", e);
+            std::process::exit(1);
+        });
         manager.cleanup(true);
         std::process::exit(0);
     })
@@ -692,7 +691,7 @@ fn main() {
     // Handle single prompt mode
     if let Some(prompt) = args.prompt {
         println!("{}", "Processing single prompt...".color(Color::Cyan));
-        let response = match chat_manager.lock().unwrap().send_message(&prompt) {
+        let response = match chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e)).and_then(|mut mgr| mgr.send_message(&prompt)) {
             Ok(resp) => {
                 if args.debug {
                     println!("{}", "=== Raw Response ===".color(Color::Cyan));
@@ -703,7 +702,7 @@ fn main() {
             },
             Err(e) => {
                 println!("{}", format!("Error: {}", e).color(Color::Red));
-                chat_manager.lock().unwrap().cleanup(false);
+                let _ = chat_manager.lock().map(|mut mgr| mgr.cleanup(false));
                 std::process::exit(1);
             }
         };
@@ -711,7 +710,7 @@ fn main() {
         if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug) {
             println!("{}", format!("Error processing tool calls: {}", e).color(Color::Red));
         }
-        chat_manager.lock().unwrap().cleanup(false);
+        let _ = chat_manager.lock().map(|mut mgr| mgr.cleanup(false));
         return;
     }
 
@@ -737,8 +736,7 @@ fn main() {
 
     // Simple input handling for better Windows compatibility
     loop {
-        let conv_length: usize = {
-            let manager = chat_manager.lock().unwrap();
+        let conv_length: usize = chat_manager.lock().map(|manager| {
             manager
                 .history
                 .iter()
@@ -746,7 +744,10 @@ fn main() {
                     msg.get("content").and_then(|c| c.as_str()).map(|s| s.len())
                 })
                 .sum()
-        };
+        }).unwrap_or_else(|e| {
+            println!("Failed to acquire chat manager lock: {}", e);
+            0
+        });
 
         let prompt = {
             #[cfg(target_os = "windows")]
@@ -774,7 +775,7 @@ fn main() {
                         break;
                     }
                     "clear" => {
-                        chat_manager.lock().unwrap().create_chat();
+                        let _ = chat_manager.lock().map(|mut mgr| mgr.create_chat());
                         println!(
                             "{}",
                             "Conversation cleared! Starting fresh.".color(Color::Cyan)
@@ -795,9 +796,12 @@ fn main() {
                     if command.is_empty() {
                         let output = interactive_shell();
                         let llm_input = format!("User ran interactive shell session with output:\n{}", output);
-                        match chat_manager.lock().unwrap().send_message(&llm_input) {
-                            Ok(response) => display_response(&response),
-                            Err(e) => println!("{}", format!("Error: {}", e).color(Color::Red)),
+                        match chat_manager.lock() {
+                            Ok(mut mgr) => match mgr.send_message(&llm_input) {
+                                Ok(response) => display_response(&response),
+                                Err(e) => println!("{}", format!("Error: {}", e).color(Color::Red)),
+                            },
+                            Err(e) => println!("{}", format!("Lock error: {}", e).color(Color::Red)),
                         }
                     } else {
                         let output = execute_command(command);
@@ -806,9 +810,12 @@ fn main() {
                             format!("Command output: {}", output).color(Color::Magenta)
                         );
                         let llm_input = format!("User ran command '!{}' with output: {}", command, output);
-                        match chat_manager.lock().unwrap().send_message(&llm_input) {
-                            Ok(response) => display_response(&response),
-                            Err(e) => println!("{}", format!("Error: {}", e).color(Color::Red)),
+                        match chat_manager.lock() {
+                            Ok(mut mgr) => match mgr.send_message(&llm_input) {
+                                Ok(response) => display_response(&response),
+                                Err(e) => println!("{}", format!("Error: {}", e).color(Color::Red)),
+                            },
+                            Err(e) => println!("{}", format!("Lock error: {}", e).color(Color::Red)),
                         }
                     }
                 } else {
@@ -837,5 +844,5 @@ fn main() {
         }
     }
 
-    chat_manager.lock().unwrap().cleanup(false);
+    let _ = chat_manager.lock().map(|mut mgr| mgr.cleanup(false));
 }

@@ -28,7 +28,7 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
         .connect_timeout(Duration::from_secs(NETWORK_TIMEOUT))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
         .build()
-        .unwrap_or_else(|_| Client::new());
+        .unwrap_or_else(|_| crate::http::create_http_client().unwrap_or_else(|_| Client::new()));
 
     let url = format!(
         "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}",
@@ -78,7 +78,7 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
                         // Store the result in our shared vector
                         search_results_clone
                             .lock()
-                            .unwrap()
+                            .expect("Failed to lock search results")
                             .push((title, link, content));
                     });
 
@@ -294,7 +294,7 @@ pub fn scrape_url(url: &str) -> String {
         .connect_timeout(Duration::from_secs(NETWORK_TIMEOUT))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
         .build()
-        .unwrap_or_else(|_| Client::new());
+        .unwrap_or_else(|_| crate::http::create_http_client().unwrap_or_else(|_| Client::new()));
 
     match client.get(url).send() {
         Ok(resp) => {
@@ -306,7 +306,7 @@ pub fn scrape_url(url: &str) -> String {
                             let document = Html::parse_document(&text);
                             // Target readable content: paragraphs, headings, articles
                             let selector =
-                                Selector::parse("p, h1, h2, h3, h4, h5, h6, article").unwrap();
+                                Selector::parse("p, h1, h2, h3, h4, h5, h6, article").expect("Failed to parse CSS selector");
                             let readable_text: Vec<String> = document
                                 .select(&selector)
                                 .flat_map(|element| {

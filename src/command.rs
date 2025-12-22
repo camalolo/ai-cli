@@ -1,32 +1,9 @@
-use once_cell::sync::Lazy;
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::str;
 use std::thread;
 
-static SANDBOX_ROOT: Lazy<String> = Lazy::new(|| {
-    let path = std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .to_string_lossy()
-        .to_string();
-
-    // On Windows, canonicalize() adds \\?\ prefix, remove it for display
-    #[cfg(target_os = "windows")]
-    {
-        if path.starts_with("\\\\?\\") {
-            path[4..].to_string()
-        } else {
-            path
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        path
-    }
-});
+use crate::sandbox::SANDBOX_ROOT;
 
 pub fn execute_command(command: &str) -> String {
     if command.trim().is_empty() {
@@ -45,8 +22,8 @@ pub fn execute_command(command: &str) -> String {
 
     match child {
         Ok(mut child_proc) => {
-            let stdout = child_proc.stdout.take().unwrap();
-            let stderr = child_proc.stderr.take().unwrap();
+            let stdout = child_proc.stdout.take().expect("Failed to capture stdout");
+            let stderr = child_proc.stderr.take().expect("Failed to capture stderr");
 
             if let Some(child_stdin) = child_proc.stdin.take() {
                 // Start a thread to forward input from parent stdin to child stdin

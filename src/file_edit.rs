@@ -1,36 +1,15 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
 use std::fs;
 use std::path::PathBuf;
-
-static SANDBOX_ROOT: Lazy<String> = Lazy::new(|| {
-    let path = std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .to_string_lossy()
-        .to_string();
-
-    // On Windows, canonicalize() adds \\?\ prefix, remove it for display
-    #[cfg(target_os = "windows")]
-    {
-        if path.starts_with("\\\\?\\") {
-            path[4..].to_string()
-        } else {
-            path
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        path
-    }
-});
+use difference::Changeset;
+use crate::sandbox::SANDBOX_ROOT;
 
 pub fn file_editor(
     subcommand: &str,
     filename: &str,
     data: Option<&str>,
     replacement: Option<&str>,
+    skip_confirmation: bool,
 ) -> String {
     let file_path = PathBuf::from(&*SANDBOX_ROOT).join(filename);
 
@@ -40,8 +19,22 @@ pub fn file_editor(
             Err(e) => format!("Error reading file '{}': {}", filename, e),
         },
         "write" => {
-            let content = data.unwrap_or("");
-            match fs::write(&file_path, content) {
+            let new_content = data.unwrap_or("");
+            if !skip_confirmation {
+                let current_content = fs::read_to_string(&file_path).unwrap_or_default();
+                let changeset = Changeset::new(&current_content, new_content, "\n");
+                println!("Diff preview for writing to '{}':", filename);
+                println!("{}", changeset);
+                println!("Apply this change? (y/n)");
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_err() {
+                    return "Failed to read user input".to_string();
+                }
+                if !input.trim().to_lowercase().starts_with('y') {
+                    return format!("Write operation cancelled by user");
+                }
+            }
+            match fs::write(&file_path, new_content) {
                 Ok(()) => format!("Successfully wrote to '{}'", filename),
                 Err(e) => format!("Error writing to '{}': {}", filename, e),
             }
@@ -98,6 +91,19 @@ pub fn file_editor(
                 Ok(re) => match fs::read_to_string(&file_path) {
                     Ok(content) => {
                         let new_content = re.replace_all(&content, replace_with);
+                        if !skip_confirmation {
+                            let changeset = Changeset::new(&content, &new_content, "\n");
+                            println!("Diff preview for search and replace in '{}':", filename);
+                            println!("{}", changeset);
+                            println!("Apply this change? (y/n)");
+                            let mut input = String::new();
+                            if std::io::stdin().read_line(&mut input).is_err() {
+                                return "Failed to read user input".to_string();
+                            }
+                            if !input.trim().to_lowercase().starts_with('y') {
+                                return format!("Search and replace operation cancelled by user");
+                            }
+                        }
                         match fs::write(&file_path, new_content.as_ref()) {
                             Ok(()) => format!(
                                 "Successfully replaced pattern '{}' with '{}' in '{}'",
@@ -119,12 +125,25 @@ pub fn file_editor(
                         .to_string()
                 }
             };
-            
+
             match fs::read_to_string(&file_path) {
                 Ok(original_content) => {
                     // Parse and apply the diff
                     match apply_patch(&original_content, diff_content) {
                         Ok(new_content) => {
+                            if !skip_confirmation {
+                                let changeset = Changeset::new(&original_content, &new_content, "\n");
+                                println!("Diff preview for applying diff to '{}':", filename);
+                                println!("{}", changeset);
+                                println!("Apply this change? (y/n)");
+                                let mut input = String::new();
+                                if std::io::stdin().read_line(&mut input).is_err() {
+                                    return "Failed to read user input".to_string();
+                                }
+                                if !input.trim().to_lowercase().starts_with('y') {
+                                    return format!("Apply diff operation cancelled by user");
+                                }
+                            }
                             // Write the new content back to the file
                             match fs::write(&file_path, &new_content) {
                                 Ok(()) => format!("Successfully applied diff to '{}'", filename),

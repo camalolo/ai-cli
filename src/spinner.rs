@@ -29,7 +29,7 @@ impl Spinner {
             let mut i = 0;
             while running_flag.load(Ordering::SeqCst) {
                 print!("\r{}", chars[i]); // Only print the character
-                io::stdout().flush().unwrap();
+                io::stdout().flush().unwrap_or_else(|e| eprintln!("Failed to flush stdout: {}", e));
                 i = (i + 1) % chars.len();
                 thread::sleep(Duration::from_millis(100)); // Adjust speed here
             }
@@ -44,7 +44,7 @@ impl Spinner {
         if self.running.load(Ordering::SeqCst) {
             self.running.store(false, Ordering::SeqCst);
             if let Some(handle) = self.handle.take() {
-                handle.join().unwrap(); // Wait for the spinner thread to finish
+                handle.join().unwrap_or_else(|e| eprintln!("Failed to join spinner thread: {:?}", e)); // Wait for the spinner thread to finish
             }
         }
     }
