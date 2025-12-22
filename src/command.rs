@@ -1,137 +1,134 @@
 use std::io::{self, Read, Write};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::str;
 use std::thread;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::fs::File;
+use std::os::fd::{AsRawFd, FromRawFd};
+use pty::fork::*;
 
 use crate::sandbox::SANDBOX_ROOT;
 
 pub fn execute_command(command: &str) -> String {
-    if command.trim().is_empty() {
-        return "Error: No command provided".to_string();
-    }
+     // Disable echo on stdin to hide passwords during command execution
+     let stdin_fd = io::stdin().as_raw_fd();
+     let mut orig_term: libc::termios = unsafe { std::mem::zeroed() };
+     unsafe { libc::tcgetattr(stdin_fd, &mut orig_term) };
+     let mut noecho_term = orig_term;
+     noecho_term.c_lflag &= !libc::ECHO;
+     unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &noecho_term) };
 
-    let (program, args) = get_command_parts(command);
+     if command.trim().is_empty() {
+         // Restore echo on stdin
+         unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &orig_term) };
+         return "Error: No command provided".to_string();
+     }
 
-    let child = Command::new(&program)
-        .args(&args)
-        .current_dir(&*SANDBOX_ROOT)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+     let (program, args) = get_command_parts(command);
 
-    match child {
-        Ok(mut child_proc) => {
-            let stdout = child_proc.stdout.take().expect("Failed to capture stdout");
-            let stderr = child_proc.stderr.take().expect("Failed to capture stderr");
+    let fork = Fork::from_ptmx().unwrap();
+    match fork {
+        Fork::Parent(pid, master) => {
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_clone = Arc::clone(&stop);
 
-            if let Some(child_stdin) = child_proc.stdin.take() {
-                // Start a thread to forward input from parent stdin to child stdin
-                let input_handle = thread::spawn(move || {
-                    let mut child_stdin = child_stdin;
-                    let mut buffer = [0u8; 1024];
-                    loop {
-                        match io::stdin().read(&mut buffer) {
-                            Ok(0) => break, // EOF
-                            Ok(n) => {
-                                if child_stdin.write_all(&buffer[..n]).is_err() {
-                                    break; // Child stdin closed
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
+             let duped_fd = unsafe { libc::dup(master.as_raw_fd()) };
+             let master_clone = unsafe { File::from_raw_fd(duped_fd) };
+             let input_handle = thread::spawn(move || {
+                 let mut master = master_clone;
+                 let mut buffer = [0u8; 1024];
 
-                // Start threads to read stdout and stderr, print to terminal, and collect
-                let stdout_handle = {
-                    let mut stdout = stdout;
-                    thread::spawn(move || {
-                        let mut buf = Vec::new();
-                        let mut temp = [0u8; 1024];
-                        loop {
-                            match stdout.read(&mut temp) {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    io::stdout().write_all(&temp[..n]).ok();
-                                    io::stdout().flush().ok();
-                                    buf.extend_from_slice(&temp[..n]);
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                        buf
-                    })
-                };
+                 // Dup stdin fd
+                 let stdin_fd = io::stdin().as_raw_fd();
+                 let dup_stdin_fd = unsafe { libc::dup(stdin_fd) };
+                 let mut stdin_file = unsafe { File::from_raw_fd(dup_stdin_fd) };
 
-                let stderr_handle = {
-                    let mut stderr = stderr;
-                    thread::spawn(move || {
-                        let mut buf = Vec::new();
-                        let mut temp = [0u8; 1024];
-                        loop {
-                            match stderr.read(&mut temp) {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    io::stderr().write_all(&temp[..n]).ok();
-                                    io::stderr().flush().ok();
-                                    buf.extend_from_slice(&temp[..n]);
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                        buf
-                    })
-                };
+                 loop {
+                     if stop_clone.load(Ordering::Relaxed) {
+                         break;
+                     }
+                     let mut fds = [libc::pollfd { fd: dup_stdin_fd, events: libc::POLLIN, revents: 0 }];
+                     let ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 0) };
+                     if ret > 0 && (fds[0].revents & libc::POLLIN) != 0 {
+                         match stdin_file.read(&mut buffer) {
+                             Ok(0) => break,
+                             Ok(n) => {
+                                 if master.write_all(&buffer[..n]).is_err() {
+                                     break;
+                                 }
+                             }
+                             Err(_) => break,
+                         }
+                     } else if ret < 0 {
+                         break;
+                     }
+                     // No data available, continue polling
+                 }
+             });
 
-                let status = child_proc.wait();
-                input_handle.join().ok();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let duped_fd2 = unsafe { libc::dup(master.as_raw_fd()) };
+            let master_clone2 = unsafe { File::from_raw_fd(duped_fd2) };
+             let output_handle = thread::spawn(move || {
+                 let mut master = master_clone2;
+                 let mut output = Vec::new();
+                 let mut buffer = [0u8; 1024];
+                 loop {
+                     match master.read(&mut buffer) {
+                         Ok(0) => break,
+                         Ok(n) => {
+                             io::stdout().write_all(&buffer[..n]).ok();
+                             io::stdout().flush().ok();
+                             output.extend_from_slice(&buffer[..n]);
+                         }
+                         Err(_) => break,
+                     }
+                 }
+                 tx.send(output).ok();
+             });
 
-                let stdout_buf = stdout_handle.join().unwrap_or_default();
-                let stderr_buf = stderr_handle.join().unwrap_or_default();
+            let mut status: libc::c_int = 0;
+            unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0); }
+            stop.store(true, Ordering::Relaxed);
+            input_handle.join().ok();
+            output_handle.join().ok();
 
-                match status {
-                    Ok(_) => {
-                        let stdout_str = String::from_utf8_lossy(&stdout_buf);
-                        let stderr_str = String::from_utf8_lossy(&stderr_buf);
-
-                        let output = if stdout_str.is_empty() && stderr_str.is_empty() {
-                            "Command executed (no output)".to_string()
-                        } else {
-                            format!("{}{}", stdout_str, stderr_str)
-                        };
-                        output
-                    }
-                    Err(e) => format!("Error waiting for command '{}': {:?}", command, e),
-                }
-            } else {
-                // No stdin pipe, just wait
-                let status = child_proc.wait();
-                match status {
-                    Ok(_) => {
-                        // Read stdout and stderr
-                        let mut stdout_buf = Vec::new();
-                        let mut stderr_buf = Vec::new();
-                        let mut stdout = stdout;
-                        let mut stderr = stderr;
-                        stdout.read_to_end(&mut stdout_buf).ok();
-                        stderr.read_to_end(&mut stderr_buf).ok();
-
-                        let stdout_str = String::from_utf8_lossy(&stdout_buf);
-                        let stderr_str = String::from_utf8_lossy(&stderr_buf);
-
-                        let output = if stdout_str.is_empty() && stderr_str.is_empty() {
-                            "Command executed (no output)".to_string()
-                        } else {
-                            format!("{}{}", stdout_str, stderr_str)
-                        };
-                        output
-                    }
-                    Err(e) => format!("Error waiting for command '{}': {:?}", command, e),
-                }
-            }
+             let output_buf = rx.recv().unwrap_or_default();
+             let output_str = String::from_utf8_lossy(&output_buf);
+             // Restore echo on stdin
+             unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &orig_term) };
+             if libc::WIFEXITED(status) {
+                 let code = libc::WEXITSTATUS(status);
+                 if code == 0 {
+                     if output_str.is_empty() {
+                         "Command executed (no output)".to_string()
+                     } else {
+                         output_str.to_string()
+                     }
+                 } else {
+                     format!("Command '{}' exited with code {}", command, code)
+                 }
+              } else {
+                  format!("Command '{}' exited abnormally", command)
+              }
         }
-        Err(e) => format!("Error spawning command '{}': {:?}", command, e),
+        Fork::Child(ref slave) => {
+            // Set PTY slave to raw mode to disable echo and hide passwords for commands like su
+            let fd = slave.as_raw_fd();
+            let mut term: libc::termios = unsafe { std::mem::zeroed() };
+            unsafe {
+                libc::tcgetattr(fd, &mut term);
+                libc::cfmakeraw(&mut term);
+                libc::tcsetattr(fd, libc::TCSANOW, &term);
+            }
+            let _ = Command::new(&program)
+                .args(&args)
+                .current_dir(&*SANDBOX_ROOT)
+                .status()
+                .unwrap();
+            std::process::exit(0);
+        }
     }
 }
 

@@ -7,7 +7,8 @@ use ctrlc;
 use dotenv::from_path;
 
 use reqwest::blocking::Client;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
 use serde_json::{json, Value};
 use std::env;
 
@@ -55,13 +56,29 @@ const COMPILE_TIME: &str = build_time_local!("%Y-%m-%d %H:%M:%S");
 fn process_execute_command(args: &Value) -> String {
     let command = args.get("command").and_then(|c| c.as_str());
     if let Some(cmd) = command {
-        println!("LLM wants to execute command: {} | Confirm execution? (y/n)", cmd.color(Color::Magenta));
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).expect("Failed to read input");
-        let input = input.trim().to_lowercase();
-        if input == "y" || input == "yes" {
+        println!("LLM wants to execute command: {} | Press Enter to confirm, Escape to deny", cmd.color(Color::Magenta));
+        let stdin_fd = io::stdin().as_raw_fd();
+        let mut orig_term: libc::termios = unsafe { std::mem::zeroed() };
+        unsafe { libc::tcgetattr(stdin_fd, &mut orig_term) };
+        let mut raw_term = orig_term;
+        unsafe { libc::cfmakeraw(&mut raw_term) };
+        unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &raw_term) };
+        let confirmed = loop {
+            let mut buf = [0u8; 1];
+            if io::stdin().read_exact(&mut buf).is_ok() {
+                let c = buf[0];
+                if c == b'\r' { // Enter
+                    break true;
+                } else if c == 0x1b { // Escape
+                    break false;
+                }
+            }
+        };
+        unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &orig_term) };
+        if confirmed {
             println!("Executing command: {}", cmd.color(Color::Magenta));
             let result = execute_command(cmd);
+            println!();
             format!("[Tool result] execute_command: {}", result)
         } else {
             "[Tool result] execute_command: User rejected the command execution.".to_string()
@@ -469,7 +486,6 @@ fn display_response(response: &Value) {
             }
         }
     }
-    println!(); // Add a newline after the response
 }
 
 fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool) -> Result<(), String> {
@@ -805,10 +821,7 @@ fn main() {
                         }
                     } else {
                         let output = execute_command(command);
-                        println!(
-                            "{}",
-                            format!("Command output: {}", output).color(Color::Magenta)
-                        );
+                        println!();
                         let llm_input = format!("User ran command '!{}' with output: {}", command, output);
                         match chat_manager.lock() {
                             Ok(mut mgr) => match mgr.send_message(&llm_input) {
