@@ -12,6 +12,7 @@ use crate::alpha_vantage::alpha_vantage_query;
 use crate::file_edit::file_editor;
 use termimad::MadSkin;
 use termimad::crossterm::style::Color as TermColor;
+use termimad::crossterm::style::Attribute;
 use crate::chat::ChatManager;
 
 pub fn process_execute_command(args: &Value) -> String {
@@ -96,10 +97,28 @@ fn normalize_output(text: &str) -> String {
 
 /// Displays normalized LLM output with Markdown rendering
 pub fn display_llm_output(content: &str, _color: Color) {
-    let normalized = normalize_output(content);
     let mut skin = MadSkin::default();
-    skin.paragraph.set_fg(TermColor::Yellow);
-    skin.print_text(&normalized);
+    skin.paragraph.set_fg(TermColor::AnsiValue(222)); // Light orange from Ubuntu palette
+    // Configure styles for headers using Ubuntu-inspired colors
+    skin.headers[0].set_fg(TermColor::AnsiValue(202)); // H1: Orange (#ff5f00 ~ Ubuntu orange)
+    skin.headers[1].set_fg(TermColor::AnsiValue(89)); // H2: Aubergine purple (#87005f ~ #772953)
+    skin.headers[2].set_fg(TermColor::AnsiValue(34)); // H3: Green (#00af00 ~ Ubuntu green)
+    skin.headers[3].set_fg(TermColor::AnsiValue(33)); // H4: Blue (#0087ff ~ Ubuntu blue)
+    skin.headers[4].set_fg(TermColor::AnsiValue(201)); // H5: Magenta (#ff00ff ~ Ubuntu magenta)
+    skin.headers[5].set_fg(TermColor::AnsiValue(226)); // H6: Yellow (#ffff00 ~ Ubuntu yellow)
+    // Bold text
+    skin.bold.set_fg(TermColor::AnsiValue(255)); // White
+    skin.bold.add_attr(Attribute::Bold);
+    // Italic text
+    skin.italic.set_fg(TermColor::AnsiValue(93)); // Purple
+    skin.italic.add_attr(Attribute::Italic);
+    // Code blocks
+    skin.code_block.set_bg(TermColor::AnsiValue(0)); // Black
+    skin.code_block.set_fg(TermColor::AnsiValue(255)); // White
+    // Inline code
+    skin.inline_code.set_bg(TermColor::AnsiValue(8)); // Dark grey
+    skin.inline_code.set_fg(TermColor::AnsiValue(255)); // White
+    println!("{}", skin.term_text(content));
 }
 
 pub fn display_response(response: &Value) {
