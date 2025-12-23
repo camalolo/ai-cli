@@ -6,8 +6,6 @@ use crate::config::Config;
 use spinners::{Spinner, Spinners};
 use async_openai::{Client, config::OpenAIConfig, types::{CreateChatCompletionRequest, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent, ChatCompletionTool, ChatCompletionToolType, FunctionObject}};
 
-
-
 pub struct ChatManager {
     config: Config, // Store configuration
     history: Vec<Value>, // Stores user and assistant messages
@@ -23,8 +21,6 @@ impl ChatManager {
     pub fn get_config(&self) -> &Config {
         &self.config
     }
-
-
 
     pub fn get_alpha_vantage_api_key(&self) -> &str {
         &self.config.alpha_vantage_api_key
@@ -67,45 +63,25 @@ impl ChatManager {
         self.history.clear(); // Reset history, system_instruction persists
     }
 
-    pub async fn send_message(&mut self, message: &str, skip_spinner: bool) -> Result<Value> {
-        // Add user message to history in OpenAI format
-        let user_message = json!({
-            "role": "user",
-            "content": message
-        });
-        self.history.push(user_message);
+    fn build_tools() -> Vec<ChatCompletionTool> {
+        vec![
 
-
-
-        // Construct the body using async-openai types for type safety
-        let mut chat_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
-
-        // Add system instruction
-        chat_messages.push(ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
-            content: ChatCompletionRequestSystemMessageContent::Text(self.system_instruction.clone()),
-            name: None,
-        }));
-
-        // Add conversation history
-        for msg in &self.history {
-            let message: ChatCompletionRequestMessage = serde_json::from_value(msg.clone())
-                .map_err(|e| anyhow!("Failed to parse message: {}", e))?;
-            chat_messages.push(message);
-        }
-
-        // Define tools using async-openai types
-        let tools = vec![
             ChatCompletionTool {
                 r#type: ChatCompletionToolType::Function,
                 function: FunctionObject {
                     name: "search_online".to_string(),
-                    description: Some("Searches the web for a given query. Use it to retrieve up to date information.".to_string()),
+                    description: Some("Search the web for a query and return a synthesized answer. Optionally include detailed results.".to_string()),
                     parameters: Some(serde_json::json!({
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
                                 "description": "The search query"
+                            },
+                            "include_results": {
+                                "type": "boolean",
+                                "description": "Whether to include a list of search results (default: false)",
+                                "default": false
                             }
                         },
                         "required": ["query"]
@@ -220,7 +196,39 @@ impl ChatManager {
                     strict: Some(false),
                 },
             },
-        ];
+        ]
+    }
+
+    pub async fn send_message(&mut self, message: &str, skip_spinner: bool, debug: bool) -> Result<Value> {
+        // Add user message to history in OpenAI format
+        let user_message = json!({
+            "role": "user",
+            "content": message
+        });
+        self.history.push(user_message);
+
+        crate::log_to_file(debug, &format!("LLM Query: {}", crate::truncate_str(message, 200)));
+
+
+
+        // Construct the body using async-openai types for type safety
+        let mut chat_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
+
+        // Add system instruction
+        chat_messages.push(ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+            content: ChatCompletionRequestSystemMessageContent::Text(self.system_instruction.clone()),
+            name: None,
+        }));
+
+        // Add conversation history
+        for msg in &self.history {
+            let message: ChatCompletionRequestMessage = serde_json::from_value(msg.clone())
+                .map_err(|e| anyhow!("Failed to parse message: {}", e))?;
+            chat_messages.push(message);
+        }
+
+        // Define tools using async-openai types
+        let tools = Self::build_tools();
 
         let request = CreateChatCompletionRequest {
             model: self.config.model.clone(),
@@ -250,6 +258,8 @@ impl ChatManager {
 
         let response_json: Value = serde_json::to_value(&response)
             .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
+
+        crate::log_to_file(debug, &format!("LLM Response: {}", crate::truncate_str(&response_json.to_string(), 500)));
 
         // Add assistant response to history in OpenAI format
         for choice in &response.choices {

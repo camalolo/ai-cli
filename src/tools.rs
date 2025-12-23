@@ -40,12 +40,15 @@ pub fn process_execute_command(args: &Value, _debug: bool, allow_commands: bool)
     }
 }
 
-pub async fn process_search_online(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>) -> (String, bool) {
+
+
+pub async fn process_search_online(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool) -> (String, bool) {
     let query = args.get("query").and_then(|q| q.as_str());
+    let include_results = args.get("include_results").and_then(|ir| ir.as_bool()).unwrap_or(false);
     if let Some(q) = query {
         let manager = chat_manager.lock().await;
         let api_key = manager.get_tavily_api_key().to_string();
-        let result = search_online(q, &api_key).await;
+        let result = search_online(q, &api_key, include_results, debug).await;
         (normalize_output(&format!("[Tool result] search_online: {}", result)), false)
     } else {
         (normalize_output("[Tool error] search_online: Missing 'query' parameter"), false)
@@ -81,6 +84,14 @@ fn normalize_output(text: &str) -> String {
 /// Adds consistent block spacing with a single blank line
 pub fn add_block_spacing() {
     println!();
+}
+
+fn tool_result(name: &str, msg: &str) -> String {
+    normalize_output(&format!("[Tool result] {}: {}", name, msg))
+}
+
+fn tool_error(name: &str, err: &str) -> String {
+    normalize_output(&format!("[Tool error] {}: {}", name, err))
 }
 
 /// Displays normalized LLM output with Markdown rendering
@@ -165,7 +176,7 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
     loop {
         let tool_calls = extract_tool_calls(&current_response);
         if debug && !tool_calls.is_empty() {
-            println!("Tool calls found: {:?}", tool_calls);
+            crate::log_to_file(debug, &format!("Tool calls found: {:?}", tool_calls));
         }
 
         if tool_calls.is_empty() {
@@ -181,27 +192,22 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                     results.push(result);
                     if rejected { rejection_occurred = true; }
                 }
+
                 "search_online" => {
-                    let (result, rejected) = process_search_online(&args, chat_manager).await;
+                    let (result, rejected) = process_search_online(&args, chat_manager, debug).await;
                     results.push(result);
                     if rejected { rejection_occurred = true; }
                 }
                 "scrape_url" => {
                     let url = args.get("url").and_then(|u| u.as_str());
-                    if let Some(u) = url {
-                        match crate::scrape::scrape_url(u) {
-                            Ok(result) => {
-                                results.push(normalize_output(&format!("[Tool result] scrape_url: {}", result)));
-                            }
-                            Err(e) => {
-                                results.push(normalize_output(&format!("[Tool error] scrape_url: {}", e)));
-                            }
-                        }
-                    } else {
-                        results.push(
-                            normalize_output("[Tool error] scrape_url: Missing 'url' parameter"),
-                        );
-                    }
+                     if let Some(u) = url {
+                         match crate::scrape::scrape_url(u) {
+                             Ok(result) => results.push(tool_result("scrape_url", &result)),
+                             Err(e) => results.push(tool_error("scrape_url", &e.to_string())),
+                         }
+                     } else {
+                         results.push(tool_error("scrape_url", "Missing 'url' parameter"));
+                     }
                 }
                 "send_email" => {
                     let subject = args.get("subject").and_then(|s| s.as_str()).unwrap_or("unknown");
@@ -214,20 +220,15 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                       let function = args.get("function").and_then(|f| f.as_str());
                       let symbol = args.get("symbol").and_then(|s| s.as_str());
                       let outputsize = args.get("outputsize").and_then(|s| s.as_str());
-                       if let (Some(func), Some(sym)) = (function, symbol) {
-                           let api_key = chat_manager.lock().await.get_alpha_vantage_api_key().to_string();
-                           match alpha_vantage_query(func, sym, &api_key, outputsize).await {
-                             Ok(result) => results.push(normalize_output(&format!(
-                                 "[Tool result] alpha_vantage_query: {}",
-                                 result
-                             ))),
-                             Err(e) => results.push(normalize_output(&format!("[Tool error] alpha_vantage_query: {}", e))),
-                         }
-                     } else {
-                         results.push(
-                             normalize_output("[Tool error] alpha_vantage_query: Missing required parameters"),
-                         );
-                     }
+                        if let (Some(func), Some(sym)) = (function, symbol) {
+                            let api_key = chat_manager.lock().await.get_alpha_vantage_api_key().to_string();
+                            match alpha_vantage_query(func, sym, &api_key, outputsize).await {
+                              Ok(result) => results.push(tool_result("alpha_vantage_query", &result)),
+                              Err(e) => results.push(tool_error("alpha_vantage_query", &e.to_string())),
+                          }
+                      } else {
+                          results.push(tool_error("alpha_vantage_query", "Missing required parameters"));
+                      }
                  }
                 "file_editor" => {
                     let filename_opt = args.get("filename").and_then(|f| f.as_str());
@@ -239,23 +240,23 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
 
                     if let (Some(subcmd), Some(fname)) = (subcommand, filename_opt) {
                         let skip_confirmation = matches!(subcmd, "read" | "search"); // Only skip for non-destructive ops
-                        let (result, rejected) = file_editor(subcmd, fname, data, replacement, skip_confirmation);
-                        results.push(normalize_output(&format!("[Tool result] file_editor: {}", result)));
-                        if rejected { rejection_occurred = true; }
-                    } else {
-                        results.push(normalize_output("[Tool error] file_editor: Missing required parameters 'subcommand' or 'filename'"));
-                    }
+                         let (result, rejected) = file_editor(subcmd, fname, data, replacement, skip_confirmation);
+                         results.push(tool_result("file_editor", &result));
+                         if rejected { rejection_occurred = true; }
+                     } else {
+                         results.push(tool_error("file_editor", "Missing required parameters 'subcommand' or 'filename'"));
+                     }
                 }
-                _ => {
-                    results.push(normalize_output(&format!("[Tool error] Unknown function: {}", func_name)));
-                }
+                 _ => {
+                     results.push(tool_error("unknown", &format!("Unknown function: {}", func_name)));
+                 }
             }
         }
 
         if !results.is_empty() {
             let combined_results = results.join("\n");
             let normalized_results = normalize_output(&combined_results);
-            current_response = chat_manager.lock().await.send_message(&normalized_results, quiet).await?;
+            current_response = chat_manager.lock().await.send_message(&normalized_results, quiet, debug).await?;
             display_response(&current_response);
             add_block_spacing();
             if rejection_occurred {

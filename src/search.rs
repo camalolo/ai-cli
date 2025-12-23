@@ -1,51 +1,69 @@
 use colored::{Color, Colorize};
-use serde_json::json;
 use tavily::{Tavily, SearchRequest};
 
-pub async fn search_online(query: &str, api_key: &str) -> String {
+async fn perform_search(query: &str, api_key: &str, include_answer: bool, include_results: bool, max_results: i32, debug: bool) -> Result<String, String> {
     if api_key.is_empty() {
-        return "Tavily Search API is not configured. Please set TAVILY_API_KEY in ~/.aicli.conf".to_string();
+        return Err("Tavily Search API is not configured. Please set TAVILY_API_KEY in ~/.aicli.conf".to_string());
     }
 
-    println!(
-        "{} {}",
-        "ai-cli is searching online for:".color(Color::Cyan).bold(),
-        query
-    );
+    crate::log_to_file(debug, &format!("Tavily Query: {}", crate::truncate_str(query, 200)));
 
     let tavily = Tavily::new(api_key);
 
     let mut request = SearchRequest::new(api_key, query);
     request
         .search_depth("advanced")
-        .include_answer(true)
-        .include_raw_content(true)
-        .max_results(5);
+        .include_answer(include_answer)
+        .include_raw_content(include_results)
+        .max_results(max_results);
 
     match tavily.call(&request).await {
         Ok(response) => {
-            if response.results.is_empty() {
-                return "No results found.".to_string();
+            let mut output_parts = Vec::new();
+
+            if include_answer {
+                if let Some(answer) = response.answer {
+                    output_parts.push(answer);
+                } else {
+                    output_parts.push("No answer generated.".to_string());
+                }
             }
 
-            let filtered_results: Vec<_> = response.results
-                .into_iter()
-                .take(5)
-                .map(|result| {
-                    json!({
-                        "title": result.title,
-                        "link": result.url,
-                        "content": result.content
-                    })
-                })
-                .collect();
+            if include_results {
+                if response.results.is_empty() {
+                    output_parts.push("No results found.".to_string());
+                } else {
+                    let mut results_text = String::new();
+                    for result in response.results.into_iter().take(max_results as usize) {
+                        results_text.push_str(&format!("- **{}**: {}\n  {}\n\n", result.title, result.url, result.content));
+                    }
+                    output_parts.push(results_text);
+                }
+            }
 
-            serde_json::to_string(&filtered_results)
-                .unwrap_or("Error serializing results".to_string())
+            let result = output_parts.join("\n");
+            crate::log_to_file(debug, &format!("Tavily Response: {}", crate::truncate_str(&result, 500)));
+            Ok(result)
         }
         Err(e) => {
-            format!("Search failed: {}", e)
+            crate::log_to_file(debug, &format!("Tavily Error: {}", e));
+            Err(format!("Search failed: {}", e))
         }
+    }
+}
+
+
+
+pub async fn search_online(query: &str, api_key: &str, include_results: bool, debug: bool) -> String {
+    println!(
+        "{} {}",
+        "ai-cli is searching online for:".color(Color::Cyan).bold(),
+        query
+    );
+    let max_results = if include_results { 5 } else { 0 };
+    match perform_search(query, api_key, true, include_results, max_results, debug).await {
+        Ok(result) => result,
+        Err(e) => e,
     }
 }
 

@@ -57,26 +57,21 @@ impl Config {
     }
 
 
-    
+}
 
+pub fn mask_or_display(value: &str) -> String {
+    if value.is_empty() {
+        "<not set>".to_string()
+    } else {
+        value.to_string()
+    }
+}
 
-    
-    /// Display configuration summary (for debug mode)
-    pub fn display_summary(&self) {
-        println!("=== AI Provider Configuration ===");
-        println!("API Base URL: {}", self.api_base_url);
-        println!("API Version: {}", self.api_version);
-        println!("Model: {}", self.model);
-        println!("API Key: {}***",
-            if self.api_key.len() > 4 {
-                &self.api_key[..4]
-            } else {
-                "***"
-            }
-        );
-        println!("Endpoint: {}", self.get_api_endpoint());
-        println!("Auth Method: Header (Bearer)");
-        println!("================================");
+pub fn mask_password(password: &str) -> String {
+    if password.is_empty() {
+        "<not set>".to_string()
+    } else {
+        "***masked***".to_string()
     }
 }
 

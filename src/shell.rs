@@ -65,34 +65,21 @@ fn detect_windows_shell() -> String {
 }
 
 fn detect_unix_shell() -> String {
-    // On Unix-like systems, use SHELL environment variable
-    if let Ok(shell_path) = env::var("SHELL") {
-        // Extract shell name from path
-        let shell_name = std::path::Path::new(&shell_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("bash");
+    let shell_path = env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+    let shell_name = std::path::Path::new(&shell_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("bash");
 
-        // Try to get version for common shells
-        let version_cmd = match shell_name {
-            "bash" => Some(("bash", vec!["--version"])),
-            "zsh" => Some(("zsh", vec!["--version"])),
-            "fish" => Some(("fish", vec!["--version"])),
-            "tcsh" | "csh" => Some((shell_name, vec!["--version"])),
-            "ksh" => Some((shell_name, vec!["--version"])),
-            _ => None,
-        };
-
-        if let Some((cmd, args)) = version_cmd {
-            if let Some(version) = get_version_line(cmd, &args) {
-                return version;
+    match shell_name {
+        "bash" | "zsh" | "fish" | "tcsh" | "csh" | "ksh" => {
+            if let Some(version) = get_version_line(shell_name, &["--version"]) {
+                version
+            } else {
+                shell_name.to_string()
             }
         }
-
-        // Fallback to shell name
-        shell_name.to_string()
-    } else {
-        "bash".to_string()
+        _ => shell_name.to_string(),
     }
 }
 
