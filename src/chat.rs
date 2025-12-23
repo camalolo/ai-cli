@@ -45,7 +45,7 @@ impl ChatManager {
         let shell_info = crate::shell::detect_shell_info();
 
         format!(
-            "Today's date is {}. You are a proactive assistant running in a sandboxed {} terminal environment with a full set of command line utilities. The default shell is {}. Your role is to assist with coding tasks, file operations, online searches, email sending, and shell commands efficiently and decisively. Assume the current directory (the sandbox root) is the target for all commands. Take initiative to provide solutions, execute commands, and analyze results immediately without asking for confirmation unless the action is explicitly ambiguous (e.g., multiple repos) or potentially destructive (e.g., deleting files). Use the `execute_command` tool to interact with the system but only when needed. Deliver concise, clear responses. After running a command, always summarize its output immediately and proceed with logical next steps, without waiting for the user to prompt you further. When reading files or executing commands, summarize the results intelligently for the user without dumping raw output unless explicitly requested. Stay within the sandbox directory. Users can run shell commands directly with `!`, and you'll receive the output to assist further. Act confidently and anticipate the user's needs to streamline their workflow. You may use md formatting to provide a more readable response.",
+            "Today's date is {}. You are a proactive assistant running in a sandboxed {} terminal environment with a full set of command line utilities. The default shell is {}. Your role is to assist with coding tasks, file operations, online searches, email sending, and shell commands efficiently and decisively. Assume the current directory (the sandbox root) is the target for all commands. Take initiative to provide solutions, execute commands, and analyze results immediately without asking for confirmation unless the action is explicitly ambiguous (e.g., multiple repos) or potentially destructive (e.g., deleting files). Use the `execute_command` tool to interact with the system but only when needed. Deliver concise, clear responses. After running a command, always summarize its output immediately and proceed with logical next steps, without waiting for the user to prompt you further. Stay within the sandbox directory. Users can run shell commands directly with `!`, and you'll receive the output to assist further. Act confidently and anticipate the user's needs to streamline their workflow. You may use md formatting to provide a more readable response. When using search tools, prioritize concise modes ('basic') to maintain efficiency unless the query requires depth.",
             today, os_name, shell_info
         )
     }
@@ -70,7 +70,7 @@ impl ChatManager {
                 r#type: ChatCompletionToolType::Function,
                 function: FunctionObject {
                     name: "search_online".to_string(),
-                    description: Some("Search the web for a query and return a synthesized answer. Optionally include detailed results.".to_string()),
+                    description: Some("Search the web for a query and return a synthesized answer. Use for factual lookups, current events, or research. Defaults to concise summaries for speed.".to_string()),
                     parameters: Some(serde_json::json!({
                         "type": "object",
                         "properties": {
@@ -78,10 +78,16 @@ impl ChatManager {
                                 "type": "string",
                                 "description": "The search query"
                             },
-                            "include_results": {
+                             "include_results": {
                                 "type": "boolean",
-                                "description": "Whether to include a list of search results (default: false)",
+                                "description": "Whether to include a list of search results (default: false). Set to true only if you need to review sources directly, e.g., for verification or multiple options.",
                                 "default": false
+                            },
+                            "answer_mode": {
+                                "type": "string",
+                                "enum": ["basic", "full"],
+                                "description": "Answer detail level. 'basic' (default): Quick summary in 3 sentences, ideal for straightforward queries. 'full': Comprehensive answer with all available details, best for in-depth research or ambiguous topics.",
+                                "default": "basic"
                             }
                         },
                         "required": ["query"]

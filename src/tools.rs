@@ -45,10 +45,11 @@ pub fn process_execute_command(args: &Value, _debug: bool, allow_commands: bool)
 pub async fn process_search_online(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool) -> (String, bool) {
     let query = args.get("query").and_then(|q| q.as_str());
     let include_results = args.get("include_results").and_then(|ir| ir.as_bool()).unwrap_or(false);
+    let answer_mode = args.get("answer_mode").and_then(|am| am.as_str()).unwrap_or("basic");
     if let Some(q) = query {
         let manager = chat_manager.lock().await;
         let api_key = manager.get_tavily_api_key().to_string();
-        let result = search_online(q, &api_key, include_results, debug).await;
+        let result = search_online(q, &api_key, include_results, answer_mode, debug).await;
         (normalize_output(&format!("[Tool result] search_online: {}", result)), false)
     } else {
         (normalize_output("[Tool error] search_online: Missing 'query' parameter"), false)
