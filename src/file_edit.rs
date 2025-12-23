@@ -1,7 +1,9 @@
 use regex::Regex;
 use std::fs;
 use std::path::PathBuf;
-use difference::Changeset;
+use std::io::{self, Read};
+use std::os::fd::AsRawFd;
+use difference::{Changeset, Difference};
 use crate::sandbox::get_sandbox_root;
 
 use crate::patch::apply_patch;
@@ -9,13 +11,35 @@ use crate::patch::apply_patch;
 fn confirm_change(original: &str, new_content: &str, filename: &str, operation_desc: &str) -> Result<bool, String> {
     let changeset = Changeset::new(original, new_content, "\n");
     println!("Diff preview for {} in '{}':", operation_desc, filename);
-    println!("{}", changeset);
-    println!("Apply this change? (y/n)");
-    let mut input = String::new();
-    if std::io::stdin().read_line(&mut input).is_err() {
-        return Err("Failed to read user input".to_string());
+    for diff in &changeset.diffs {
+        match diff {
+            Difference::Same(ref s) => println!("\x1b[2m {}\x1b[0m", s),
+            Difference::Rem(ref s) => println!("\x1b[91m-{}\x1b[0m", s),
+            Difference::Add(ref s) => println!("\x1b[92m+{}\x1b[0m", s),
+        }
     }
-    Ok(input.trim().to_lowercase().starts_with('y'))
+    println!("Press Enter to apply, Escape to cancel");
+    let stdin_fd = io::stdin().as_raw_fd();
+    let mut orig_term: libc::termios = unsafe { std::mem::zeroed() };
+    unsafe { libc::tcgetattr(stdin_fd, &mut orig_term) };
+    let mut raw_term = orig_term;
+    unsafe { libc::cfmakeraw(&mut raw_term) };
+    unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &raw_term) };
+    let confirmed = loop {
+        let mut buf = [0u8; 1];
+        if io::stdin().read_exact(&mut buf).is_ok() {
+            let c = buf[0];
+            if c == b'\r' { // Enter
+                break true;
+            } else if c == 0x1b || c == 0x03 { // Escape or ^C
+                break false;
+            }
+        } else {
+            break false;
+        }
+    };
+    unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &orig_term) };
+    Ok(confirmed)
 }
 
 pub fn file_editor(
@@ -38,7 +62,7 @@ pub fn file_editor(
                 let current_content = fs::read_to_string(&file_path).unwrap_or_default();
                 match confirm_change(&current_content, new_content, filename, "writing to") {
                     Ok(true) => {},
-                    Ok(false) => return "Write operation cancelled by user".to_string(),
+                                    Ok(false) => return "User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(),
                     Err(e) => return e,
                 }
             }
@@ -102,7 +126,7 @@ pub fn file_editor(
                         if !skip_confirmation {
                             match confirm_change(&content, &new_content, filename, "search and replace in") {
                                 Ok(true) => {},
-                                Ok(false) => return "Search and replace operation cancelled by user".to_string(),
+                                Ok(false) => return "User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(),
                                 Err(e) => return e,
                             }
                         }
@@ -136,7 +160,7 @@ pub fn file_editor(
                             if !skip_confirmation {
                                 match confirm_change(&original_content, &new_content, filename, "applying diff to") {
                                     Ok(true) => {},
-                                    Ok(false) => return "Apply diff operation cancelled by user".to_string(),
+                    Ok(false) => return "User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(),
                                     Err(e) => return e,
                                 }
                             }
