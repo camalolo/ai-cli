@@ -14,7 +14,7 @@ mod shell;
 mod tools;
 mod search;
 mod scrape;
-mod similarity;
+
 mod patch;
 mod command;
 mod email;
@@ -42,9 +42,14 @@ struct Args {
     /// Enable debug output for troubleshooting
     #[arg(long)]
     debug: bool,
+
+    /// Allow LLM to execute commands without user confirmation in single prompt mode
+    #[arg(long)]
+    allow_commands: bool,
 }
 
 fn main() -> Result<(), anyhow::Error> {
+    env_logger::init();
     let args = Args::parse();
 
     // Load configuration
@@ -119,7 +124,7 @@ fn main() -> Result<(), anyhow::Error> {
         };
         display_response(&response);
         crate::tools::add_block_spacing();
-        if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, true) {
+        if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, true, args.allow_commands) {
             println!("{}", format!("Error processing tool calls: {}", e).color(Color::Red));
         }
         chat_manager.lock().unwrap().cleanup(false);
@@ -212,7 +217,7 @@ fn main() -> Result<(), anyhow::Error> {
                 if let Some(command) = user_input.strip_prefix('!') {
                     let command: &str = command.trim();
                     if command.is_empty() {
-                        let output = interactive_shell();
+                        let output = interactive_shell(args.debug);
                         let llm_input = format!("User ran interactive shell session with output:\n{}", output);
                         match chat_manager.lock() {
                             Ok(mut mgr) => match mgr.send_message(&llm_input, false) {
@@ -225,9 +230,9 @@ fn main() -> Result<(), anyhow::Error> {
                             Err(e) => println!("{}", format!("Lock error: {}", e).color(Color::Red)),
                         }
                     } else {
-                        let output = execute_command(command);
-                        println!();
+                        let output = execute_command(command).unwrap_or_else(|e| e.to_string());
                         let llm_input = format!("User ran command '!{}' with output: {}", command, output);
+                        println!("{}", output);
                         match chat_manager.lock() {
                             Ok(mut mgr) => match mgr.send_message(&llm_input, false) {
                                 Ok(response) => {
@@ -255,7 +260,7 @@ fn main() -> Result<(), anyhow::Error> {
                         display_response(&response);
                     crate::tools::add_block_spacing();
 
-                    if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, false) {
+                    if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, false, false) {
                         println!("{}", format!("Error processing tool calls: {}", e).color(Color::Red));
                     }
                 }

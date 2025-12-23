@@ -4,6 +4,7 @@ use colored::{Color, Colorize};
 use serde_json::{json, Value};
 use crate::config::Config;
 use spinners::{Spinner, Spinners};
+use async_openai::types::{CreateChatCompletionRequest, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent, ChatCompletionTool, ChatCompletionToolType, FunctionObject};
 
 
 
@@ -19,13 +20,15 @@ impl ChatManager {
         &self.config.google_search_api_key
     }
 
+    pub fn get_config(&self) -> &Config {
+        &self.config
+    }
+
     pub fn get_google_search_engine_id(&self) -> &str {
         &self.config.google_search_engine_id
     }
 
-    pub fn get_smtp_server(&self) -> &str {
-        &self.config.smtp_server
-    }
+
 
     pub fn get_alpha_vantage_api_key(&self) -> &str {
         &self.config.alpha_vantage_api_key
@@ -78,139 +81,162 @@ impl ChatManager {
         });
         self.history.push(user_message);
 
-        // Construct messages array with system instruction and history
-        let mut messages = Vec::new();
-        
-        // Add system instruction as first message
-        messages.push(json!({
-            "role": "system",
-            "content": &self.system_instruction
-        }));
-        
-        // Add conversation history
-        messages.extend_from_slice(&self.history);
 
-        // Construct the body in OpenAI-compatible format
-        let body = json!({
-            "model": self.config.model,
-            "messages": messages,
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "search_online",
-                        "description": "Searches the web for a given query. Use it to retrieve up to date information.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "The search query",
-                                }
-                            },
-                            "required": ["query"]
-                        }
-                    }
+
+        // Construct the body using async-openai types for type safety
+        let mut chat_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
+
+        // Add system instruction
+        chat_messages.push(ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+            content: ChatCompletionRequestSystemMessageContent::Text(self.system_instruction.clone()),
+            name: None,
+        }));
+
+        // Add conversation history
+        for msg in &self.history {
+            let message: ChatCompletionRequestMessage = serde_json::from_value(msg.clone())
+                .map_err(|e| anyhow!("Failed to parse message: {}", e))?;
+            chat_messages.push(message);
+        }
+
+        // Define tools using async-openai types
+        let tools = vec![
+            ChatCompletionTool {
+                r#type: ChatCompletionToolType::Function,
+                function: FunctionObject {
+                    name: "search_online".to_string(),
+                    description: Some("Searches the web for a given query. Use it to retrieve up to date information.".to_string()),
+                    parameters: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search query"
+                            }
+                        },
+                        "required": ["query"]
+                    })),
+                    strict: Some(false),
                 },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "execute_command",
-                        "description": "Execute a system command. Use this for any shell task.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "command": {"type": "string"}
-                            },
-                            "required": ["command"]
-                        }
-                    }
+            },
+            ChatCompletionTool {
+                r#type: ChatCompletionToolType::Function,
+                function: FunctionObject {
+                    name: "execute_command".to_string(),
+                    description: Some("Execute a system command. Use this for any shell task.".to_string()),
+                    parameters: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"}
+                        },
+                        "required": ["command"]
+                    })),
+                    strict: Some(false),
                 },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "send_email",
-                        "description": "Sends an email to a fixed address using SMTP.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "subject": {"type": "string", "description": "Email subject line"},
-                                "body": {"type": "string", "description": "Email message body"}
-                            },
-                            "required": ["subject", "body"]
-                        }
-                    }
+            },
+            ChatCompletionTool {
+                r#type: ChatCompletionToolType::Function,
+                function: FunctionObject {
+                    name: "send_email".to_string(),
+                    description: Some("Sends an email to a fixed address using SMTP.".to_string()),
+                    parameters: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "subject": {"type": "string", "description": "Email subject line"},
+                            "body": {"type": "string", "description": "Email message body"}
+                        },
+                        "required": ["subject", "body"]
+                    })),
+                    strict: Some(false),
                 },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "alpha_vantage_query",
-                        "description": "Query the Alpha Vantage API for stock/financial data",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "function": {
-                                    "type": "string",
-                                    "description": "The Alpha Vantage function (e.g., TIME_SERIES_DAILY)"
-                                },
-                                "symbol": {
-                                    "type": "string",
-                                    "description": "The stock symbol (e.g., IBM)"
-                                }
-                            },
-                            "required": ["function", "symbol"]
-                        }
-                    }
+            },
+            ChatCompletionTool {
+                r#type: ChatCompletionToolType::Function,
+                function: FunctionObject {
+                    name: "alpha_vantage_query".to_string(),
+                    description: Some("Query the Alpha Vantage API for stock/financial data".to_string()),
+                     parameters: Some(serde_json::json!({
+                         "type": "object",
+                         "properties": {
+                             "function": {
+                                 "type": "string",
+                                 "description": "The Alpha Vantage function (e.g., TIME_SERIES_DAILY)"
+                             },
+                             "symbol": {
+                                 "type": "string",
+                                 "description": "The stock symbol (e.g., IBM)"
+                             },
+                             "outputsize": {
+                                 "type": "string",
+                                 "enum": ["compact", "full"],
+                                 "description": "The size of the output data. 'compact' returns the last 100 data points, 'full' returns all available data. Defaults to 'compact'."
+                             }
+                         },
+                         "required": ["function", "symbol"]
+                    })),
+                    strict: Some(false),
                 },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "scrape_url",
-                        "description": "Scrapes the content of a single URL",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "url": {
-                                    "type": "string",
-                                    "description": "The URL to scrape",
-                                }
-                            },
-                            "required": ["url"]
-                        }
-                    }
+            },
+            ChatCompletionTool {
+                r#type: ChatCompletionToolType::Function,
+                function: FunctionObject {
+                    name: "scrape_url".to_string(),
+                    description: Some("Scrapes the content of a single URL".to_string()),
+                    parameters: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "The URL to scrape"
+                            }
+                        },
+                        "required": ["url"]
+                    })),
+                    strict: Some(false),
                 },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "file_editor",
-                        "description": "Edit files in the sandbox with sub-commands: read, write, search, search_and_replace, apply_diff.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "subcommand": {
-                                    "type": "string",
-                                    "description": "The sub-command to execute: read, write, search, search_and_replace, apply_diff",
-                                    "enum": ["read", "write", "search", "search_and_replace", "apply_diff"]
-                                },
-                                "filename": {
-                                    "type": "string",
-                                    "description": "The name of the file in the sandbox to operate on"
-                                },
-                                "data": {
-                                    "type": "string",
-                                    "description": "Content to write (for write), regex pattern (for search/search_and_replace), or diff content (for apply_diff)"
-                                },
-                                "replacement": {
-                                    "type": "string",
-                                    "description": "Replacement text for search_and_replace"
-                                }
+            },
+            ChatCompletionTool {
+                r#type: ChatCompletionToolType::Function,
+                function: FunctionObject {
+                    name: "file_editor".to_string(),
+                    description: Some("Edit files in the sandbox with sub-commands: read, write, search, search_and_replace, apply_diff.".to_string()),
+                    parameters: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "subcommand": {
+                                "type": "string",
+                                "description": "The sub-command to execute: read, write, search, search_and_replace, apply_diff",
+                                "enum": ["read", "write", "search", "search_and_replace", "apply_diff"]
                             },
-                            "required": ["subcommand", "filename"]
-                        }
-                    }
-                }
-            ]
-        });
+                            "filename": {
+                                "type": "string",
+                                "description": "The name of the file in the sandbox to operate on"
+                            },
+                            "data": {
+                                "type": "string",
+                                "description": "Content to write (for write), regex pattern (for search/search_and_replace), or diff content (for apply_diff)"
+                            },
+                            "replacement": {
+                                "type": "string",
+                                "description": "Replacement text for search_and_replace"
+                            }
+                        },
+                        "required": ["subcommand", "filename"]
+                    })),
+                    strict: Some(false),
+                },
+            },
+        ];
+
+        let request = CreateChatCompletionRequest {
+            model: self.config.model.clone(),
+            messages: chat_messages,
+            tools: Some(tools),
+            ..Default::default()
+        };
+
+        let body = serde_json::to_value(&request)
+            .map_err(|e| anyhow!("Failed to serialize request: {}", e))?;
 
         let spinner = if skip_spinner {
             None

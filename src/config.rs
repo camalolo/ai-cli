@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use config::{Config as ConfigLoader, Environment, File, FileFormat};
+use std::env;
 
 /// Configuration structure holding all settings for the AI CLI
 #[derive(Deserialize)]
+#[serde(default)]
 pub struct Config {
     // AI Provider Configuration
     pub api_base_url: String,
@@ -24,47 +27,27 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load configuration from ~/.aicli.conf file and environment variables
+    /// Load configuration from ~/.aicli.toml file and environment variables
     pub fn load() -> Result<Self> {
         let home_dir = dirs::home_dir()
             .context("Could not determine home directory")?;
 
         let config_path = home_dir.join(".aicli.conf");
 
-        // Load .env style config file if it exists
-        if config_path.exists() {
-            dotenv::from_path(&config_path)
-                .context("Failed to load config file")?;
+        let loader = ConfigLoader::builder()
+            .add_source(File::from(config_path).format(FileFormat::Ini).required(false))
+            .add_source(Environment::with_prefix(""))
+            .build()
+            .context("Failed to build config")?;
+
+        let mut config: Config = loader.try_deserialize().context("Failed to deserialize config")?;
+
+        // Override SMTP_SERVER_IP with SMTP_SERVER for backwards compatibility
+        if let Ok(smtp_ip) = env::var("SMTP_SERVER_IP") {
+            config.smtp_server = smtp_ip;
         }
 
-        // Read environment variables with defaults
-        let api_base_url = std::env::var("API_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".to_string());
-        let api_version = std::env::var("API_VERSION").unwrap_or_else(|_| "v1".to_string());
-        let model = std::env::var("MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-        let api_key = std::env::var("API_KEY").unwrap_or_else(|_| "".to_string());
-        let smtp_server = std::env::var("SMTP_SERVER_IP").unwrap_or_else(|_| "localhost".to_string());
-        let smtp_username = std::env::var("SMTP_USERNAME").unwrap_or_else(|_| "".to_string());
-        let smtp_password = std::env::var("SMTP_PASSWORD").unwrap_or_else(|_| "".to_string());
-        let destination_email = std::env::var("DESTINATION_EMAIL").unwrap_or_else(|_| "".to_string());
-        let sender_email = std::env::var("SENDER_EMAIL").unwrap_or_else(|_| "".to_string());
-        let google_search_api_key = std::env::var("GOOGLE_SEARCH_API_KEY").unwrap_or_else(|_| "".to_string());
-        let google_search_engine_id = std::env::var("GOOGLE_SEARCH_ENGINE_ID").unwrap_or_else(|_| "".to_string());
-        let alpha_vantage_api_key = std::env::var("ALPHA_VANTAGE_API_KEY").unwrap_or_else(|_| "".to_string());
-
-        Ok(Config {
-            api_base_url,
-            api_version,
-            model,
-            api_key,
-            smtp_server,
-            smtp_username,
-            smtp_password,
-            destination_email,
-            sender_email,
-            google_search_api_key,
-            google_search_engine_id,
-            alpha_vantage_api_key,
-        })
+        Ok(config)
     }
     
     /// Construct the API endpoint URL - always use OpenAI-compatible format
@@ -94,15 +77,34 @@ impl Config {
         println!("API Base URL: {}", self.api_base_url);
         println!("API Version: {}", self.api_version);
         println!("Model: {}", self.model);
-        println!("API Key: {}***", 
-            if self.api_key.len() > 4 { 
-                &self.api_key[..4] 
-            } else { 
-                "***" 
+        println!("API Key: {}***",
+            if self.api_key.len() > 4 {
+                &self.api_key[..4]
+            } else {
+                "***"
             }
         );
         println!("Endpoint: {}", self.get_api_endpoint());
         println!("Auth Method: Header (Bearer)");
         println!("================================");
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            api_base_url: "https://api.openai.com".to_string(),
+            api_version: "v1".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            api_key: "".to_string(),
+            smtp_server: "localhost".to_string(),
+            smtp_username: "".to_string(),
+            smtp_password: "".to_string(),
+            destination_email: "".to_string(),
+            sender_email: "".to_string(),
+            google_search_api_key: "".to_string(),
+            google_search_engine_id: "".to_string(),
+            alpha_vantage_api_key: "".to_string(),
+        }
     }
 }

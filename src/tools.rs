@@ -11,29 +11,25 @@ use crate::file_edit::file_editor;
 use termimad::MadSkin;
 use termimad::crossterm::style::Color as TermColor;
 use termimad::crossterm::style::Attribute;
-use crossterm::{event::{read, KeyCode}, terminal::{disable_raw_mode, enable_raw_mode}};
-use crate::chat::ChatManager;
 
-pub fn process_execute_command(args: &Value) -> (String, bool) {
+use crate::chat::ChatManager;
+use anyhow::{anyhow, Result};
+
+pub fn process_execute_command(args: &Value, _debug: bool, allow_commands: bool) -> (String, bool) {
     let command = args.get("command").and_then(|c| c.as_str());
     if let Some(cmd) = command {
-        println!("LLM wants to execute command: {} | Press Enter to confirm, Escape to deny", cmd.color(Color::Magenta));
-        enable_raw_mode().expect("Failed to enable raw mode");
-        let confirmed = loop {
-            if let Ok(event) = read() {
-                if let crossterm::event::Event::Key(key) = event {
-                    if key.code == KeyCode::Enter {
-                        break true;
-                    } else if key.code == KeyCode::Esc {
-                        break false;
-                    }
-                }
-            }
+        let confirmed = if allow_commands {
+            true
+        } else {
+            dialoguer::Confirm::new()
+                .with_prompt(format!("LLM wants to execute command: {} | Confirm?", cmd))
+                .default(false)
+                .interact()
+                .unwrap_or(false)
         };
-        disable_raw_mode().expect("Failed to disable raw mode");
         if confirmed {
             println!("Executing command: {}", cmd.color(Color::Magenta));
-            let result = execute_command(cmd);
+            let result = execute_command(cmd).unwrap_or_else(|e| e.to_string());
             println!();
             (normalize_output(&format!("[Tool result] execute_command: {}", result)), false)
         } else {
@@ -47,15 +43,14 @@ pub fn process_execute_command(args: &Value) -> (String, bool) {
 pub fn process_search_online(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>) -> (String, bool) {
     let query = args.get("query").and_then(|q| q.as_str());
     if let Some(q) = query {
-        match chat_manager.lock() {
-            Ok(manager) => {
-                let api_key = manager.get_google_search_api_key().to_string();
-                let engine_id = manager.get_google_search_engine_id().to_string();
-                let result = search_online(q, &api_key, &engine_id);
-                (normalize_output(&format!("[Tool result] search_online: {}", result)), false)
-            }
-            Err(_) => (normalize_output("[Tool error] search_online: Failed to access configuration"), false),
-        }
+        let manager = match chat_manager.lock() {
+            Ok(m) => m,
+            Err(_) => return (normalize_output("[Tool error] search_online: Failed to access configuration"), false),
+        };
+        let api_key = manager.get_google_search_api_key().to_string();
+        let engine_id = manager.get_google_search_engine_id().to_string();
+        let result = search_online(q, &api_key, &engine_id);
+        (normalize_output(&format!("[Tool result] search_online: {}", result)), false)
     } else {
         (normalize_output("[Tool error] search_online: Missing 'query' parameter"), false)
     }
@@ -66,12 +61,14 @@ pub fn process_send_email(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>, 
     let body = args.get("body").and_then(|b| b.as_str());
 
     if let (Some(subj), Some(bod)) = (subject, body) {
-        let smtp_server_result = chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e)).map(|manager| manager.get_smtp_server().to_string());
-        match smtp_server_result {
-            Ok(smtp_server) => match send_email(subj, bod, &smtp_server, debug) {
-                Ok(msg) => (normalize_output(&format!("[Tool result] send_email: {}", msg)), false),
-                Err(e) => (normalize_output(&format!("[Tool error] send_email: {}", e)), false),
-            },
+        match chat_manager.lock() {
+            Ok(manager) => {
+                let config = manager.get_config();
+                match send_email(subj, bod, config, debug) {
+                    Ok(msg) => (normalize_output(&format!("[Tool result] send_email: {}", msg)), false),
+                    Err(e) => (normalize_output(&format!("[Tool error] send_email: {}", e)), false),
+                }
+            }
             Err(e) => (normalize_output(&format!("[Tool error] send_email: {}", e)), false),
         }
     } else {
@@ -170,7 +167,7 @@ fn extract_tool_calls(response: &Value) -> Vec<(String, Value)> {
         .collect()
 }
 
-pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool, quiet: bool) -> Result<(), String> {
+pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool, quiet: bool, allow_commands: bool) -> Result<()> {
     let mut current_response = response.clone();
 
     loop {
@@ -188,7 +185,7 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
         for (func_name, args) in tool_calls {
             match func_name.as_str() {
                 "execute_command" => {
-                    let (result, rejected) = process_execute_command(&args);
+                    let (result, rejected) = process_execute_command(&args, debug, allow_commands);
                     results.push(result);
                     if rejected { rejection_occurred = true; }
                 }
@@ -221,30 +218,25 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
                     results.push(result);
                     if rejected { rejection_occurred = true; }
                 }
-                "alpha_vantage_query" => {
-                    let function = args.get("function").and_then(|f| f.as_str());
-                    let symbol = args.get("symbol").and_then(|s| s.as_str());
-                    if let (Some(func), Some(sym)) = (function, symbol) {
-                        match chat_manager.lock() {
-                            Ok(manager) => {
-                                let api_key = manager.get_alpha_vantage_api_key().to_string();
-                                match alpha_vantage_query(func, sym, &api_key) {
-                                    Ok(result) => results.push(normalize_output(&format!(
-                                        "[Tool result] alpha_vantage_query: {}",
-                                        result
-                                    ))),
-                                    Err(e) => results
-                                        .push(normalize_output(&format!("[Tool error] alpha_vantage_query: {}", e))),
-                                }
-                            }
-                            Err(_) => results.push(normalize_output("[Tool error] alpha_vantage_query: Failed to access configuration")),
-                        }
-                    } else {
-                        results.push(
-                            normalize_output("[Tool error] alpha_vantage_query: Missing required parameters"),
-                        );
-                    }
-                }
+                 "alpha_vantage_query" => {
+                      let function = args.get("function").and_then(|f| f.as_str());
+                      let symbol = args.get("symbol").and_then(|s| s.as_str());
+                      let outputsize = args.get("outputsize").and_then(|s| s.as_str());
+                      if let (Some(func), Some(sym)) = (function, symbol) {
+                          let api_key = chat_manager.lock().map_err(|e| anyhow!("Failed to acquire chat manager lock: {}", e))?.get_alpha_vantage_api_key().to_string();
+                          match alpha_vantage_query(func, sym, &api_key, outputsize) {
+                             Ok(result) => results.push(normalize_output(&format!(
+                                 "[Tool result] alpha_vantage_query: {}",
+                                 result
+                             ))),
+                             Err(e) => results.push(normalize_output(&format!("[Tool error] alpha_vantage_query: {}", e))),
+                         }
+                     } else {
+                         results.push(
+                             normalize_output("[Tool error] alpha_vantage_query: Missing required parameters"),
+                         );
+                     }
+                 }
                 "file_editor" => {
                     let filename_opt = args.get("filename").and_then(|f| f.as_str());
                     let filename = filename_opt.unwrap_or("unknown");
@@ -271,7 +263,7 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
         if !results.is_empty() {
             let combined_results = results.join("\n");
             let normalized_results = normalize_output(&combined_results);
-            current_response = chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e))?.send_message(&normalized_results, quiet).map_err(|e| e.to_string())?;
+            current_response = chat_manager.lock().map_err(|e| anyhow!("Failed to acquire chat manager lock: {}", e))?.send_message(&normalized_results, quiet)?;
             display_response(&current_response);
             add_block_spacing();
             if rejection_occurred {

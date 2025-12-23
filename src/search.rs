@@ -1,10 +1,11 @@
 use colored::{Color, Colorize};
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use rayon::prelude::*;
 
 use crate::scrape::scrape_url;
-use crate::similarity::{cosine_similarity, RELEVANCE_THRESHOLD};
+use textdistance::str;
+
+const RELEVANCE_THRESHOLD: f32 = 0.05;
 
 pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
     if api_key.is_empty() || engine_id.is_empty() {
@@ -35,21 +36,8 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
             };
             let items = json.get("items").and_then(|i| i.as_array());
             if let Some(items) = items {
-                // Convert items to a Vec we can use for parallel processing
-                let item_values: Vec<Value> = items.to_vec();
-
-                // Create thread-safe results container
-                let search_results: Arc<Mutex<Vec<(String, String, String)>>> =
-                    Arc::new(Mutex::new(Vec::with_capacity(item_values.len())));
-
-                // Create threads for parallel scraping
-                let mut handles = vec![];
-
-                for item in item_values {
-                    // Clone shared resources for the thread
-                    let search_results_clone = Arc::clone(&search_results);
-
-                    // Extract data before spawning the thread
+                // Parallel scraping using rayon
+                let search_results: Vec<(String, String, String)> = items.par_iter().map(|item| {
                     let title = item
                         .get("title")
                         .and_then(|t| t.as_str())
@@ -60,31 +48,9 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
                         .and_then(|l| l.as_str())
                         .unwrap_or("No link")
                         .to_string();
-
-                     // Spawn a thread for each search result
-                      let handle = thread::spawn(move || {
-                          let content = scrape_url(link.as_str()).unwrap_or_else(|e| format!("Error scraping: {}", e));
-
-                          // Store the result in our shared vector
-                          search_results_clone
-                              .lock()
-                              .expect("Failed to lock search results")
-                              .push((title, link, content));
-                      });
-
-                    handles.push(handle);
-                }
-
-                // Wait for all threads to complete
-                for handle in handles {
-                    let _ = handle.join();
-                }
-
-                // Get the results from the Mutex
-                let search_results = Arc::try_unwrap(search_results)
-                    .expect("Arc still has multiple owners")
-                    .into_inner()
-                    .expect("Mutex is poisoned");
+                    let content = scrape_url(link.as_str()).unwrap_or_else(|e| format!("Error scraping: {}", e));
+                    (title, link, content)
+                }).collect();
 
                 let documents: Vec<&str> = search_results
                     .iter()
@@ -108,7 +74,7 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
                             return None;
                         }
 
-                        let similarity = cosine_similarity(query, &content);
+                        let similarity = str::cosine(query, &content) as f32;
                         Some((similarity, title, link, content))
                     })
                     .collect();

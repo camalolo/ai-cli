@@ -2,12 +2,13 @@ use regex::Regex;
 use std::fs;
 use std::path::PathBuf;
 use difference::{Changeset, Difference};
-use crossterm::{terminal, event::{self, KeyCode}};
+
 use crate::sandbox::get_sandbox_root;
+use anyhow::Result;
 
 use crate::patch::apply_patch;
 
-fn confirm_change(original: &str, new_content: &str, filename: &str, operation_desc: &str) -> Result<bool, String> {
+fn confirm_change(original: &str, new_content: &str, filename: &str, operation_desc: &str) -> Result<bool> {
     let changeset = Changeset::new(original, new_content, "\n");
     println!("Diff preview for {} in '{}':", operation_desc, filename);
     for diff in &changeset.diffs {
@@ -17,20 +18,12 @@ fn confirm_change(original: &str, new_content: &str, filename: &str, operation_d
             Difference::Add(ref s) => println!("\x1b[92m+{}\x1b[0m", s),
         }
     }
-    println!("Press Enter to apply, Escape to cancel");
-    terminal::enable_raw_mode().map_err(|e| e.to_string())?;
-    let confirmed = loop {
-        match event::read() {
-            Ok(event::Event::Key(key_event)) => match key_event.code {
-                KeyCode::Enter => break Ok(true),
-                KeyCode::Esc => break Ok(false),
-                _ => {}
-            },
-            _ => break Err("Failed to read input".to_string()),
-        }
-    };
-    terminal::disable_raw_mode().ok();
-    confirmed
+    let confirmed = dialoguer::Confirm::new()
+        .with_prompt("Apply changes?")
+        .default(false)
+        .interact()
+        .unwrap_or(false);
+    Ok(confirmed)
 }
 
 pub fn file_editor(
@@ -51,11 +44,11 @@ pub fn file_editor(
             let new_content = data.unwrap_or("");
             if !skip_confirmation {
                 let current_content = fs::read_to_string(&file_path).unwrap_or_default();
-                match confirm_change(&current_content, new_content, filename, "writing to") {
-                    Ok(true) => {},
-                                    Ok(false) => return ("User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(), true),
-                    Err(e) => return (e, false),
-                }
+                 match confirm_change(&current_content, new_content, filename, "writing to") {
+                     Ok(true) => {},
+                                     Ok(false) => return ("User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(), true),
+                     Err(e) => return (e.to_string(), false),
+                 }
             }
             match fs::write(&file_path, new_content) {
                 Ok(()) => (format!("Successfully wrote to '{}'", filename), false),
@@ -115,11 +108,11 @@ pub fn file_editor(
                     Ok(content) => {
                         let new_content = re.replace_all(&content, replace_with);
                         if !skip_confirmation {
-                            match confirm_change(&content, &new_content, filename, "search and replace in") {
-                                Ok(true) => {},
-                                Ok(false) => return ("User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(), true),
-                                Err(e) => return (e, false),
-                            }
+                             match confirm_change(&content, &new_content, filename, "search and replace in") {
+                                 Ok(true) => {},
+                                 Ok(false) => return ("User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(), true),
+                                 Err(e) => return (e.to_string(), false),
+                             }
                         }
                         match fs::write(&file_path, new_content.as_ref()) {
                             Ok(()) => (format!(
@@ -149,11 +142,11 @@ pub fn file_editor(
                     match apply_patch(&original_content, diff_content) {
                         Ok(new_content) => {
                             if !skip_confirmation {
-                                match confirm_change(&original_content, &new_content, filename, "applying diff to") {
-                                    Ok(true) => {},
-                    Ok(false) => return ("User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(), true),
-                                    Err(e) => return (e, false),
-                                }
+                                 match confirm_change(&original_content, &new_content, filename, "applying diff to") {
+                                     Ok(true) => {},
+                     Ok(false) => return ("User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(), true),
+                                     Err(e) => return (e.to_string(), false),
+                                 }
                             }
                             // Write the new content back to the file
                             match fs::write(&file_path, &new_content) {
