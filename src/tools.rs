@@ -93,7 +93,7 @@ pub fn display_response(response: &Value) {
     }
 }
 
-pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool) -> Result<(), String> {
+pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool, quiet: bool) -> Result<(), String> {
     let mut current_response = response.clone();
 
     loop {
@@ -211,7 +211,7 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
 
         if !results.is_empty() {
             let combined_results = results.join("\n");
-            current_response = chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e))?.send_message(&combined_results, false)?;
+            current_response = chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e))?.send_message(&combined_results, quiet)?;
             display_response(&current_response);
         } else {
             break;

@@ -122,7 +122,7 @@ fn main() {
             }
         };
         display_response(&response);
-        if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug) {
+        if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, true) {
             println!("{}", format!("Error processing tool calls: {}", e).color(Color::Red));
         }
         chat_manager.lock().unwrap().cleanup(false);
@@ -244,7 +244,7 @@ fn main() {
 
                     display_response(&response);
 
-                    if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug) {
+                    if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, false) {
                         println!("{}", format!("Error processing tool calls: {}", e).color(Color::Red));
                     }
                 }
