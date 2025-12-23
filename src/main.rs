@@ -19,7 +19,6 @@ mod command;
 mod email;
 mod alpha_vantage;
 mod file_edit;
-mod spinner;
 mod sandbox;
 mod http;
 

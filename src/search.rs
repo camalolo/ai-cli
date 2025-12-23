@@ -1,11 +1,9 @@
 use colored::{Color, Colorize};
-use reqwest::blocking::ClientBuilder;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
-use crate::scrape::{scrape_url, NETWORK_TIMEOUT};
+use crate::scrape::scrape_url;
 use crate::similarity::{compute_tfidf, tf_vector, cosine_similarity, build_term_graph, graph_similarity, RELEVANCE_THRESHOLD};
 
 pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
@@ -20,11 +18,7 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
     );
 
     // Create a client with timeout
-    let client = ClientBuilder::new()
-        .connect_timeout(Duration::from_secs(NETWORK_TIMEOUT))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
-        .build()
-        .unwrap_or_else(|_| crate::http::create_http_client());
+    let client = crate::http::create_http_client();
 
     let url = format!(
         "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}",

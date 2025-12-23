@@ -23,6 +23,7 @@ difference = "2.0"
 libc = "0.2.158"
 pty = "0.2"
 rustyline = "17.0"
+spinners = "4.1"
 
 [profile.dev]
 debug = false

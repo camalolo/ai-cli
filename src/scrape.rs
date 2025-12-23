@@ -1,12 +1,7 @@
 use colored::{Color, Colorize};
-use reqwest::blocking::ClientBuilder;
 use reqwest::StatusCode;
 use scraper::{Html, Selector};
 use std::sync::OnceLock;
-use std::time::Duration;
-use crate::http;
-
-pub const NETWORK_TIMEOUT: u64 = 30;
 
 static SELECTOR: OnceLock<Selector> = OnceLock::new();
 
@@ -14,11 +9,7 @@ pub fn scrape_url(url: &str) -> String {
     println!("{} {}", "ai-cli is reading:".color(Color::Cyan).bold(), url);
 
     // Create a client with timeout
-    let client = ClientBuilder::new()
-        .connect_timeout(Duration::from_secs(NETWORK_TIMEOUT))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-        .build()
-        .unwrap_or_else(|_| http::create_http_client());
+    let client = crate::http::create_http_client();
 
     match client.get(url).send() {
         Ok(resp) => {

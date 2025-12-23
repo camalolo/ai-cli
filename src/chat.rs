@@ -1,10 +1,10 @@
 use chrono::Local;
 use colored::{Color, Colorize};
 use serde_json::{json, Value};
-use reqwest::blocking::Client;
-use std::time::Duration;
 use crate::config::Config;
-use crate::spinner::Spinner;
+use spinners::{Spinner, Spinners};
+
+
 
 pub struct ChatManager {
     config: Config, // Store configuration
@@ -68,10 +68,7 @@ impl ChatManager {
     }
 
     pub fn send_message(&mut self, message: &str, skip_spinner: bool) -> Result<Value, String> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(90))
-            .build()
-            .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+        let client = crate::http::create_http_client();
 
         // Add user message to history in OpenAI format
         let user_message = json!({
@@ -214,10 +211,11 @@ impl ChatManager {
             ]
         });
 
-        let mut spinner = if skip_spinner { None } else { Some(Spinner::new()) };
-        if let Some(ref mut spinner) = spinner {
-            spinner.start();
-        }
+        let spinner = if skip_spinner {
+            None
+        } else {
+            Some(Spinner::new(Spinners::Dots, "".into()))
+        };
 
         // Build request with configurable endpoint and authentication
         let endpoint = self.config.get_api_endpoint();
@@ -237,8 +235,9 @@ impl ChatManager {
             return Err("Authentication failed. Please check your API key in ~/.aicli.conf".to_string());
         }
 
-        if let Some(ref mut spinner) = spinner {
+        if let Some(mut spinner) = spinner {
             spinner.stop();
+            print!("\r\x1b[2K");
         }
 
         let response_json: Value = response
