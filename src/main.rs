@@ -123,6 +123,7 @@ fn main() {
             }
         };
         display_response(&response);
+        crate::tools::add_block_spacing();
         if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, true) {
             println!("{}", format!("Error processing tool calls: {}", e).color(Color::Red));
         }
@@ -180,8 +181,6 @@ fn main() {
             }
         };
 
-        println!(); // Add blank line before prompt
-
         let readline = rl.readline(&prompt);
 
         match readline {
@@ -222,7 +221,10 @@ fn main() {
                         let llm_input = format!("User ran interactive shell session with output:\n{}", output);
                         match chat_manager.lock() {
                             Ok(mut mgr) => match mgr.send_message(&llm_input, false) {
-                                Ok(response) => display_response(&response),
+                                Ok(response) => {
+                                    display_response(&response);
+                                    crate::tools::add_block_spacing();
+                                },
                                 Err(e) => println!("{}", format!("Error: {}", e).color(Color::Red)),
                             },
                             Err(e) => println!("{}", format!("Lock error: {}", e).color(Color::Red)),
@@ -233,25 +235,30 @@ fn main() {
                         let llm_input = format!("User ran command '!{}' with output: {}", command, output);
                         match chat_manager.lock() {
                             Ok(mut mgr) => match mgr.send_message(&llm_input, false) {
-                                Ok(response) => display_response(&response),
+                                Ok(response) => {
+                                    display_response(&response);
+                                    crate::tools::add_block_spacing();
+                                },
                                 Err(e) => println!("{}", format!("Error: {}", e).color(Color::Red)),
                             },
                             Err(e) => println!("{}", format!("Lock error: {}", e).color(Color::Red)),
                         }
                     }
-                 } else {
-                    let response = match chat_manager.lock().unwrap().send_message(user_input, false) {
-                        Ok(resp) => resp,
-                        Err(e) => {
-                            println!(
-                                "{}",
-                                format!("Error: A generative AI error occurred: {}", e).color(Color::Red)
-                            );
-                            continue;
-                        }
-                    };
+                    } else {
+                        let response = match chat_manager.lock().unwrap().send_message(user_input, false) {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                println!(
+                                    "{}",
+                                    format!("Error: A generative AI error occurred: {}", e).color(Color::Red)
+                                );
+                                continue;
+                            }
+                        };
 
-                    display_response(&response);
+                        println!(); // Add blank line before response
+                        display_response(&response);
+                    crate::tools::add_block_spacing();
 
                     if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, false) {
                         println!("{}", format!("Error processing tool calls: {}", e).color(Color::Red));

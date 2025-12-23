@@ -48,13 +48,13 @@ pub fn file_editor(
     data: Option<&str>,
     replacement: Option<&str>,
     skip_confirmation: bool,
-) -> String {
+) -> (String, bool) {
     let file_path = PathBuf::from(get_sandbox_root()).join(filename);
 
     match subcommand {
         "read" => match fs::read_to_string(&file_path) {
-            Ok(content) => format!("File contents:\n{}", content),
-            Err(e) => format!("Error reading file '{}': {}", filename, e),
+            Ok(content) => (format!("File contents:\n{}", content), false),
+            Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
         },
         "write" => {
             let new_content = data.unwrap_or("");
@@ -62,61 +62,61 @@ pub fn file_editor(
                 let current_content = fs::read_to_string(&file_path).unwrap_or_default();
                 match confirm_change(&current_content, new_content, filename, "writing to") {
                     Ok(true) => {},
-                                    Ok(false) => return "User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(),
-                    Err(e) => return e,
+                                    Ok(false) => return ("User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(), true),
+                    Err(e) => return (e, false),
                 }
             }
             match fs::write(&file_path, new_content) {
-                Ok(()) => format!("Successfully wrote to '{}'", filename),
-                Err(e) => format!("Error writing to '{}': {}", filename, e),
+                Ok(()) => (format!("Successfully wrote to '{}'", filename), false),
+                Err(e) => (format!("Error writing to '{}': {}", filename, e), false),
             }
         }
         "search" => {
             let pattern = match data {
                 Some(p) => p,
                 None => {
-                    return "Error: 'data' parameter with regex pattern is required for search"
-                        .to_string()
+                    return ("Error: 'data' parameter with regex pattern is required for search"
+                        .to_string(), false)
                 }
             };
-            match Regex::new(pattern) {
-                Ok(re) => match fs::read_to_string(&file_path) {
-                    Ok(content) => {
-                        let matches: Vec<_> = re.find_iter(&content).collect();
-                        if matches.is_empty() {
-                            format!(
-                                "No matches found for pattern '{}' in '{}'",
-                                pattern, filename
-                            )
-                        } else {
-                            let match_list: Vec<String> = matches
-                                .iter()
-                                .map(|m| format!(" - {} (at position {})", m.as_str(), m.start()))
-                                .collect();
-                            format!(
-                                "Found {} matches for pattern '{}' in '{}':\n{}",
-                                matches.len(),
-                                pattern,
-                                filename,
-                                match_list.join("\n")
-                            )
-                        }
-                    }
-                    Err(e) => format!("Error reading file '{}': {}", filename, e),
-                },
-                Err(e) => format!("Error compiling regex pattern '{}': {}", pattern, e),
-            }
+             match Regex::new(pattern) {
+                 Ok(re) => match fs::read_to_string(&file_path) {
+                     Ok(content) => {
+                         let matches: Vec<_> = re.find_iter(&content).collect();
+                         if matches.is_empty() {
+                             (format!(
+                                 "No matches found for pattern '{}' in '{}'",
+                                 pattern, filename
+                             ), false)
+                         } else {
+                             let match_list: Vec<String> = matches
+                                 .iter()
+                                 .map(|m| format!(" - {} (at position {})", m.as_str(), m.start()))
+                                 .collect();
+                             (format!(
+                                 "Found {} matches for pattern '{}' in '{}':\n{}",
+                                 matches.len(),
+                                 pattern,
+                                 filename,
+                                 match_list.join("\n")
+                             ), false)
+                         }
+                     }
+                     Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
+                 },
+                 Err(e) => (format!("Error compiling regex pattern '{}': {}", pattern, e), false),
+             }
         }
         "search_and_replace" => {
             let pattern = match data {
                 Some(p) => p,
-                None => return "Error: 'data' parameter with regex pattern is required for search_and_replace".to_string(),
+                None => return ("Error: 'data' parameter with regex pattern is required for search_and_replace".to_string(), false),
             };
             let replace_with = match replacement {
                 Some(r) => r,
                 None => {
-                    return "Error: 'replacement' parameter is required for search_and_replace"
-                        .to_string()
+                    return ("Error: 'replacement' parameter is required for search_and_replace"
+                        .to_string(), false)
                 }
             };
             match Regex::new(pattern) {
@@ -126,29 +126,29 @@ pub fn file_editor(
                         if !skip_confirmation {
                             match confirm_change(&content, &new_content, filename, "search and replace in") {
                                 Ok(true) => {},
-                                Ok(false) => return "User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(),
-                                Err(e) => return e,
+                                Ok(false) => return ("User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(), true),
+                                Err(e) => return (e, false),
                             }
                         }
                         match fs::write(&file_path, new_content.as_ref()) {
-                            Ok(()) => format!(
+                            Ok(()) => (format!(
                                 "Successfully replaced pattern '{}' with '{}' in '{}'",
                                 pattern, replace_with, filename
-                            ),
-                            Err(e) => format!("Error writing to '{}': {}", filename, e),
+                            ), false),
+                            Err(e) => (format!("Error writing to '{}': {}", filename, e), false),
                         }
                     }
-                    Err(e) => format!("Error reading file '{}': {}", filename, e),
+                    Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
                 },
-                Err(e) => format!("Error compiling regex pattern '{}': {}", pattern, e),
+                Err(e) => (format!("Error compiling regex pattern '{}': {}", pattern, e), false),
             }
         }
         "apply_diff" => {
             let diff_content = match data {
                 Some(d) => d,
                 None => {
-                    return "Error: 'data' parameter with diff content is required for apply_diff"
-                        .to_string()
+                    return ("Error: 'data' parameter with diff content is required for apply_diff"
+                        .to_string(), false)
                 }
             };
 
@@ -160,23 +160,23 @@ pub fn file_editor(
                             if !skip_confirmation {
                                 match confirm_change(&original_content, &new_content, filename, "applying diff to") {
                                     Ok(true) => {},
-                    Ok(false) => return "User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(),
-                                    Err(e) => return e,
+                    Ok(false) => return ("User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.".to_string(), true),
+                                    Err(e) => return (e, false),
                                 }
                             }
                             // Write the new content back to the file
                             match fs::write(&file_path, &new_content) {
-                                Ok(()) => format!("Successfully applied diff to '{}'", filename),
-                                Err(e) => format!("Error writing to '{}': {}", filename, e),
+                                Ok(()) => (format!("Successfully applied diff to '{}'", filename), false),
+                                Err(e) => (format!("Error writing to '{}': {}", filename, e), false),
                             }
                         },
-                        Err(e) => format!("Error parsing or applying diff: {}", e),
+                        Err(e) => (format!("Error parsing or applying diff: {}", e), false),
                     }
                 }
-                Err(e) => format!("Error reading file '{}': {}", filename, e),
+                Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
             }
         }
-        _ => format!("Error: Unknown subcommand '{}'", subcommand),
+        _ => (format!("Error: Unknown subcommand '{}'", subcommand), false),
     }
 }
 
