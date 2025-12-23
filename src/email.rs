@@ -1,10 +1,11 @@
+use anyhow::{anyhow, Context, Result};
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use std::env;
 use std::time::Duration;
 
-pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> Result<String, String> {
+pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> Result<String> {
     if debug {
         println!("=== Email Debug Info ===");
         println!("SMTP Server: {}", smtp_server);
@@ -33,7 +34,7 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
                 println!("Available env vars with EMAIL: {:?}",
                     env::vars().filter(|(k,_)| k.contains("EMAIL")).collect::<Vec<_>>());
             }
-            return Err("DESTINATION_EMAIL environment variable not set. Please set it to the recipient's email address.".to_string())
+            return Err(anyhow!("DESTINATION_EMAIL environment variable not set. Please set it to the recipient's email address."))
         },
     };
 
@@ -49,12 +50,12 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
 
     // Build the email message
     let email = Message::builder()
-        .from(sender.parse().map_err(|e| format!("Invalid sender email '{}': {}", sender, e))?)
-        .to(recipient.parse().map_err(|e| format!("Invalid recipient email '{}': {}", recipient, e))?)
+        .from(sender.parse().with_context(|| format!("Invalid sender email '{}'", sender))?)
+        .to(recipient.parse().with_context(|| format!("Invalid recipient email '{}'", recipient))?)
         .subject(subject)
         .header(ContentType::TEXT_PLAIN)
         .body(body.to_string())
-        .map_err(|e| format!("Failed to build email: {}", e))?;
+        .with_context(|| "Failed to build email")?;
 
     // Create SMTP transport
     if debug {
@@ -113,7 +114,7 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
                     if debug {
                         println!("Failed to create SMTP relay: {}", e);
                     }
-                    return Err(format!("Failed to create SMTP relay: {}", e));
+                     return Err(anyhow!("Failed to create SMTP relay: {}", e));
                 }
             }
         } else {
@@ -147,7 +148,7 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
             if debug {
                 println!("Email send failed with error: {}", e);
             }
-            Err(format!("Failed to send email: {}", e))
+            Err(anyhow!("Failed to send email: {}", e))
         }
     }
 }

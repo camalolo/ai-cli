@@ -25,8 +25,21 @@ pty = "0.2"
 rustyline = "17.0"
 spinners = "4.1"
 crossterm = "0.27"
-textdistance = "1.1"
-patchkit = "0.1"
+anyhow = "1.0"
+dunce = "1.0"
+sysinfo = "0.30"
+which = "6.0"
+portable-pty = "0.8"
+expectrl = "0.7"
+readability = "0.3"
+diffy = "0.4"
+dialoguer = "0.11"
+strsim = "0.11"
+# candle-core = "0.6"  # Uncomment if using embeddings
+# candle-nn = "0.6"    # Uncomment if using embeddings
+# candle-transformers = "0.6"  # Uncomment if using embeddings
+textdistance = "1.1"  # Keep temporarily for transition
+patchkit = "0.1"  # Keep temporarily for transition
 
 [profile.dev]
 debug = false

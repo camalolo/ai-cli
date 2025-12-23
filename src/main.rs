@@ -1,4 +1,5 @@
 use clap::Parser;
+use anyhow::Result;
 use colored::{Color, Colorize};
 use std::sync::{Arc, Mutex};
 use build_time::build_time_local;
@@ -43,17 +44,12 @@ struct Args {
     debug: bool,
 }
 
-fn main() {
+fn main() -> Result<(), anyhow::Error> {
     let args = Args::parse();
 
     // Load configuration
-    let config = match Config::load() {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            println!("{}", format!("Error: {}", e).color(Color::Red));
-            std::process::exit(1);
-        }
-    };
+    let config = Config::load()?;
+    println!("Loaded config: base_url={}, version={}, model={}, key_present={}", config.api_base_url, config.api_version, config.model, !config.api_key.is_empty());
 
     // Debug output for configuration
     if args.debug {
@@ -118,7 +114,7 @@ fn main() {
             Err(e) => {
                 println!("{}", format!("Error: {}", e).color(Color::Red));
                 chat_manager.lock().unwrap().cleanup(false);
-                std::process::exit(1);
+                return Err(e);
             }
         };
         display_response(&response);
@@ -127,7 +123,7 @@ fn main() {
             println!("{}", format!("Error processing tool calls: {}", e).color(Color::Red));
         }
         chat_manager.lock().unwrap().cleanup(false);
-        return;
+        return Ok(());
     }
 
     println!(
@@ -282,4 +278,6 @@ fn main() {
     }
 
     chat_manager.lock().unwrap().cleanup(false);
+
+    Ok(())
 }

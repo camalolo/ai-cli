@@ -1,21 +1,22 @@
-use std::env;
-use std::path::{Path, PathBuf};
+use anyhow::{Context, Result};
+use serde::Deserialize;
 
 /// Configuration structure holding all settings for the AI CLI
+#[derive(Deserialize)]
 pub struct Config {
     // AI Provider Configuration
     pub api_base_url: String,
     pub api_version: String,
     pub model: String,
     pub api_key: String,
-    
+
     // SMTP Configuration
     pub smtp_server: String,
     pub smtp_username: String,
     pub smtp_password: String,
     pub destination_email: String,
     pub sender_email: String,
-    
+
     // Optional: Search APIs
     pub google_search_api_key: String,
     pub google_search_engine_id: String,
@@ -23,57 +24,47 @@ pub struct Config {
 }
 
 impl Config {
-    fn get_env_or_default(key: &str, default: &str) -> String {
-        env::var(key).unwrap_or_else(|_| default.to_string())
-    }
+    /// Load configuration from ~/.aicli.conf file and environment variables
+    pub fn load() -> Result<Self> {
+        let home_dir = dirs::home_dir()
+            .context("Could not determine home directory")?;
 
-    /// Load configuration from ~/.aicli.conf file
-    pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let home_dir = ::dirs::home_dir()
-            .expect("Could not determine home directory")
-            .to_string_lossy()
-            .to_string();
+        let config_path = home_dir.join(".aicli.conf");
 
-        let config_path = PathBuf::from(&home_dir).join(".aicli.conf").to_string_lossy().to_string();
-
-        // Check if config file exists
-        if !Path::new(&config_path).exists() {
-            return Err(format!(
-                "Configuration file not found at {}\n\
-                 Please create ~/.aicli.conf with your settings.\n\
-                  See readme.md for configuration examples.",
-                config_path
-            ).into());
+        // Load .env style config file if it exists
+        if config_path.exists() {
+            dotenv::from_path(&config_path)
+                .context("Failed to load config file")?;
         }
 
-        // Load environment variables from config file
-        dotenv::from_path(&config_path)
-            .map_err(|e| format!("Failed to load config file: {}", e))?;
+        // Read environment variables with defaults
+        let api_base_url = std::env::var("API_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".to_string());
+        let api_version = std::env::var("API_VERSION").unwrap_or_else(|_| "v1".to_string());
+        let model = std::env::var("MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+        let api_key = std::env::var("API_KEY").unwrap_or_else(|_| "".to_string());
+        let smtp_server = std::env::var("SMTP_SERVER_IP").unwrap_or_else(|_| "localhost".to_string());
+        let smtp_username = std::env::var("SMTP_USERNAME").unwrap_or_else(|_| "".to_string());
+        let smtp_password = std::env::var("SMTP_PASSWORD").unwrap_or_else(|_| "".to_string());
+        let destination_email = std::env::var("DESTINATION_EMAIL").unwrap_or_else(|_| "".to_string());
+        let sender_email = std::env::var("SENDER_EMAIL").unwrap_or_else(|_| "".to_string());
+        let google_search_api_key = std::env::var("GOOGLE_SEARCH_API_KEY").unwrap_or_else(|_| "".to_string());
+        let google_search_engine_id = std::env::var("GOOGLE_SEARCH_ENGINE_ID").unwrap_or_else(|_| "".to_string());
+        let alpha_vantage_api_key = std::env::var("ALPHA_VANTAGE_API_KEY").unwrap_or_else(|_| "".to_string());
 
-        // Load values with defaults
-        let config = Config {
-            // AI Provider Configuration
-            api_base_url: Self::get_env_or_default("API_BASE_URL", "https://generativelanguage.googleapis.com"),
-            api_version: Self::get_env_or_default("API_VERSION", "v1beta"),
-            model: Self::get_env_or_default("MODEL", "gemini-2.5-flash"),
-            api_key: Self::get_env_or_default("API_KEY", ""),
-
-            // SMTP Configuration with defaults
-            smtp_server: Self::get_env_or_default("SMTP_SERVER_IP", "localhost"),
-            smtp_username: Self::get_env_or_default("SMTP_USERNAME", ""),
-            smtp_password: Self::get_env_or_default("SMTP_PASSWORD", ""),
-            destination_email: Self::get_env_or_default("DESTINATION_EMAIL", ""),
-            sender_email: Self::get_env_or_default("SENDER_EMAIL", ""),
-
-            // Optional: Search APIs (empty if not set)
-            google_search_api_key: Self::get_env_or_default("GOOGLE_SEARCH_API_KEY", ""),
-            google_search_engine_id: Self::get_env_or_default("GOOGLE_SEARCH_ENGINE_ID", ""),
-            alpha_vantage_api_key: Self::get_env_or_default("ALPHA_VANTAGE_API_KEY", ""),
-        };
-        
-        // API key validation moved to runtime on 401 error
-        
-        Ok(config)
+        Ok(Config {
+            api_base_url,
+            api_version,
+            model,
+            api_key,
+            smtp_server,
+            smtp_username,
+            smtp_password,
+            destination_email,
+            sender_email,
+            google_search_api_key,
+            google_search_engine_id,
+            alpha_vantage_api_key,
+        })
     }
     
     /// Construct the API endpoint URL - always use OpenAI-compatible format

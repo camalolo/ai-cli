@@ -1,3 +1,4 @@
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use std::io::{self, Read, Write};
 use std::process::Command;
 use std::str;
@@ -11,17 +12,11 @@ use pty::fork::*;
 use crate::sandbox::get_sandbox_root;
 
 pub fn execute_command(command: &str) -> String {
-     // Disable echo on stdin to hide passwords during command execution
-     let stdin_fd = io::stdin().as_raw_fd();
-     let mut orig_term: libc::termios = unsafe { std::mem::zeroed() };
-     unsafe { libc::tcgetattr(stdin_fd, &mut orig_term) };
-     let mut noecho_term = orig_term;
-     noecho_term.c_lflag &= !libc::ECHO;
-     unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &noecho_term) };
+     // Enable raw mode to hide passwords during command execution
+     enable_raw_mode().expect("Failed to enable raw mode");
 
      if command.trim().is_empty() {
-         // Restore echo on stdin
-         unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &orig_term) };
+         disable_raw_mode().expect("Failed to disable raw mode");
          return "Error: No command provided".to_string();
      }
 
@@ -96,9 +91,8 @@ pub fn execute_command(command: &str) -> String {
 
              let output_buf = rx.recv().unwrap_or_default();
              let output_str = String::from_utf8_lossy(&output_buf);
-             // Restore echo on stdin
-             unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &orig_term) };
-             if libc::WIFEXITED(status) {
+              disable_raw_mode().expect("Failed to disable raw mode");
+              if libc::WIFEXITED(status) {
                  let code = libc::WEXITSTATUS(status);
                  if code == 0 {
                      if output_str.is_empty() {

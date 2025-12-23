@@ -1,4 +1,5 @@
 use chrono::Local;
+use anyhow::{anyhow, Result};
 use colored::{Color, Colorize};
 use serde_json::{json, Value};
 use crate::config::Config;
@@ -67,7 +68,7 @@ impl ChatManager {
         self.history.clear(); // Reset history, system_instruction persists
     }
 
-    pub fn send_message(&mut self, message: &str, skip_spinner: bool) -> Result<Value, String> {
+    pub fn send_message(&mut self, message: &str, skip_spinner: bool) -> Result<Value> {
         let client = crate::http::create_http_client();
 
         // Add user message to history in OpenAI format
@@ -229,10 +230,10 @@ impl ChatManager {
         let response = request
             .json(&body)
             .send()
-            .map_err(|e| format!("API request failed: {}", e))?;
+            .map_err(|e| anyhow!("API request failed: {}", e))?;
 
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err("Authentication failed. Please check your API key in ~/.aicli.conf".to_string());
+        if !response.status().is_success() {
+            return Err(anyhow!("API request failed with status: {}", response.status()));
         }
 
         if let Some(mut spinner) = spinner {
@@ -242,7 +243,7 @@ impl ChatManager {
 
         let response_json: Value = response
             .json()
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
+            .map_err(|e| anyhow!("Failed to parse response: {}", e))?;
 
         // Add assistant response to history in OpenAI format
         if let Some(choices) = response_json.get("choices").and_then(|c| c.as_array()) {
@@ -261,11 +262,9 @@ impl ChatManager {
             self.history.clear();
             self.cleaned_up = true;
             println!("{}", "Shutting down...".color(Color::Cyan));
-            std::thread::sleep(std::time::Duration::from_secs(if is_signal {
-                3
-            } else {
-                2
-            }));
+            if is_signal {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+            }
         }
     }
 }

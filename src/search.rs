@@ -61,16 +61,16 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
                         .unwrap_or("No link")
                         .to_string();
 
-                    // Spawn a thread for each search result
-                     let handle = thread::spawn(move || {
-                         let content = scrape_url(link.as_str());
+                     // Spawn a thread for each search result
+                      let handle = thread::spawn(move || {
+                          let content = scrape_url(link.as_str()).unwrap_or_else(|e| format!("Error scraping: {}", e));
 
-                         // Store the result in our shared vector
-                         search_results_clone
-                             .lock()
-                             .expect("Failed to lock search results")
-                             .push((title, link, content));
-                     });
+                          // Store the result in our shared vector
+                          search_results_clone
+                              .lock()
+                              .expect("Failed to lock search results")
+                              .push((title, link, content));
+                      });
 
                     handles.push(handle);
                 }

@@ -1,5 +1,5 @@
 use colored::{Color, Colorize};
-use std::io::{self, Write};
+use rustyline::DefaultEditor;
 use std::env;
 use std::process::Command;
 use crate::command::execute_command;
@@ -99,25 +99,21 @@ fn detect_unix_shell() -> String {
 pub fn interactive_shell() -> String {
     println!("{}", "Entering interactive shell mode. Type 'exit' to return.".color(Color::Cyan));
     let mut accumulated_output = String::new();
+    let mut rl = DefaultEditor::new().expect("Failed to create editor");
     loop {
-        print!("shell> ");
-        io::stdout().flush().expect("Failed to flush stdout");
-
-        let mut input = String::new();
-        match io::stdin().read_line(&mut input) {
-            Ok(_) => {
-                let input = input.trim();
+        let readline = rl.readline("shell> ");
+        match readline {
+            Ok(line) => {
+                let input = line.trim();
                 if input == "exit" {
                     break;
                 }
+                rl.add_history_entry(input).ok();
                 let output = execute_command(input);
                 println!("{}", output.color(Color::Magenta));
                 accumulated_output.push_str(&format!("Command: {}\nOutput: {}\n\n", input, output));
             }
-            Err(e) => {
-                println!("{}", format!("Input error: {}", e).color(Color::Red));
-                break;
-            }
+            Err(_) => break,
         }
     }
     println!("{}", "Exiting interactive shell mode.".color(Color::Cyan));

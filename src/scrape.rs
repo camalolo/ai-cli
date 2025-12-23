@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Result};
 use colored::{Color, Colorize};
 use reqwest::StatusCode;
 use scraper::{Html, Selector};
@@ -5,7 +6,7 @@ use std::sync::OnceLock;
 
 static SELECTOR: OnceLock<Selector> = OnceLock::new();
 
-pub fn scrape_url(url: &str) -> String {
+pub fn scrape_url(url: &str) -> Result<String> {
     println!("{} {}", "ai-cli is reading:".color(Color::Cyan).bold(), url);
 
     // Create a client with timeout
@@ -31,29 +32,29 @@ pub fn scrape_url(url: &str) -> String {
                                 .collect();
 
                             if readable_text.is_empty() {
-                                "No readable content found on this page.".to_string()
+                                Ok("No readable content found on this page.".to_string())
                             } else {
-                                readable_text.join(" ")
+                                Ok(readable_text.join(" "))
                             }
                         }
-                        Err(e) => format!("Error reading content: {}", e),
+                        Err(e) => Err(anyhow!("Error reading content: {}", e)),
                     }
                 }
-                StatusCode::NOT_FOUND => "Skipped: 404 Not Found".to_string(),
-                StatusCode::FORBIDDEN => "Skipped: 403 Forbidden".to_string(),
+                StatusCode::NOT_FOUND => Ok("Skipped: 404 Not Found".to_string()),
+                StatusCode::FORBIDDEN => Ok("Skipped: 403 Forbidden".to_string()),
                 StatusCode::INTERNAL_SERVER_ERROR => {
-                    "Skipped: 500 Internal Server Error".to_string()
+                    Ok("Skipped: 500 Internal Server Error".to_string())
                 }
-                status => format!("Skipped: HTTP status {}", status),
+                status => Ok(format!("Skipped: HTTP status {}", status)),
             }
         }
         Err(e) => {
             if e.is_timeout() {
-                "Skipped: Request timed out".to_string()
+                Ok("Skipped: Request timed out".to_string())
             } else if e.is_connect() {
-                "Skipped: Connection error".to_string()
+                Ok("Skipped: Connection error".to_string())
             } else {
-                format!("Error fetching {}: {}", url, e)
+                Err(anyhow!("Error fetching {}: {}", url, e))
             }
         }
     }

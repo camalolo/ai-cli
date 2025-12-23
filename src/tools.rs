@@ -1,8 +1,6 @@
 use colored::{Color, Colorize};
 use serde_json::{json, Value};
-use std::io::{self, Read};
 use regex::Regex;
-use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::Mutex;
 use crate::command::execute_command;
@@ -13,30 +11,26 @@ use crate::file_edit::file_editor;
 use termimad::MadSkin;
 use termimad::crossterm::style::Color as TermColor;
 use termimad::crossterm::style::Attribute;
+use crossterm::{event::{read, KeyCode}, terminal::{disable_raw_mode, enable_raw_mode}};
 use crate::chat::ChatManager;
 
 pub fn process_execute_command(args: &Value) -> (String, bool) {
     let command = args.get("command").and_then(|c| c.as_str());
     if let Some(cmd) = command {
         println!("LLM wants to execute command: {} | Press Enter to confirm, Escape to deny", cmd.color(Color::Magenta));
-        let stdin_fd = io::stdin().as_raw_fd();
-        let mut orig_term: libc::termios = unsafe { std::mem::zeroed() };
-        unsafe { libc::tcgetattr(stdin_fd, &mut orig_term) };
-        let mut raw_term = orig_term;
-        unsafe { libc::cfmakeraw(&mut raw_term) };
-        unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &raw_term) };
+        enable_raw_mode().expect("Failed to enable raw mode");
         let confirmed = loop {
-            let mut buf = [0u8; 1];
-            if io::stdin().read_exact(&mut buf).is_ok() {
-                let c = buf[0];
-                if c == b'\r' { // Enter
-                    break true;
-                } else if c == 0x1b { // Escape
-                    break false;
+            if let Ok(event) = read() {
+                if let crossterm::event::Event::Key(key) = event {
+                    if key.code == KeyCode::Enter {
+                        break true;
+                    } else if key.code == KeyCode::Esc {
+                        break false;
+                    }
                 }
             }
         };
-        unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &orig_term) };
+        disable_raw_mode().expect("Failed to disable raw mode");
         if confirmed {
             println!("Executing command: {}", cmd.color(Color::Magenta));
             let result = execute_command(cmd);
@@ -206,11 +200,14 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
                 "scrape_url" => {
                     let url = args.get("url").and_then(|u| u.as_str());
                     if let Some(u) = url {
-                        let result = crate::scrape::scrape_url(u);
-                        if result.starts_with("Error") || result.starts_with("Skipped") {
-                            println!("Scrape failed: {}", result);
+                        match crate::scrape::scrape_url(u) {
+                            Ok(result) => {
+                                results.push(normalize_output(&format!("[Tool result] scrape_url: {}", result)));
+                            }
+                            Err(e) => {
+                                results.push(normalize_output(&format!("[Tool error] scrape_url: {}", e)));
+                            }
                         }
-                        results.push(normalize_output(&format!("[Tool result] scrape_url: {}", result)));
                     } else {
                         results.push(
                             normalize_output("[Tool error] scrape_url: Missing 'url' parameter"),
@@ -274,7 +271,7 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
         if !results.is_empty() {
             let combined_results = results.join("\n");
             let normalized_results = normalize_output(&combined_results);
-            current_response = chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e))?.send_message(&normalized_results, quiet)?;
+            current_response = chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e))?.send_message(&normalized_results, quiet).map_err(|e| e.to_string())?;
             display_response(&current_response);
             add_block_spacing();
             if rejection_occurred {
