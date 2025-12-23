@@ -67,7 +67,7 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
         // For localhost, try without auth
         SmtpTransport::builder_dangerous(smtp_server)
             .port(25)
-            .timeout(Some(Duration::from_secs(30)))
+            .timeout(Some(Duration::from_secs(5)))
             .build()
     } else {
         if debug {
@@ -103,7 +103,7 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
                         println!("SMTP relay created successfully, adding credentials...");
                     }
                     // Try port 25 first (plain SMTP), then fall back to 587 if needed
-                    let mailer = relay.port(25).timeout(Some(Duration::from_secs(30))).credentials(creds).build();
+                    let mailer = relay.port(25).timeout(Some(Duration::from_secs(5))).credentials(creds).build();
                     if debug {
                         println!("SMTP transport created on port 25");
                     }
@@ -121,13 +121,11 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
                 println!("No SMTP credentials found, trying without authentication...");
             }
             // Try without authentication for local/trusted servers
-            let mailer = SmtpTransport::builder_dangerous(smtp_server).port(25).timeout(Some(Duration::from_secs(30))).build();
-            {
-                if debug {
-                    println!("SMTP transport created without authentication");
-                }
-                mailer
+            let mailer = SmtpTransport::builder_dangerous(smtp_server).port(25).timeout(Some(Duration::from_secs(5))).build();
+            if debug {
+                println!("SMTP transport created without authentication");
             }
+            mailer
         }
     };
     if debug {

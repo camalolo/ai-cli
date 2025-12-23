@@ -4,6 +4,12 @@ use std::env;
 use std::process::Command;
 use crate::command::execute_command;
 
+fn get_version_line(cmd: &str, args: &[&str]) -> Option<String> {
+    Command::new(cmd).args(args).output().ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8_lossy(&output.stdout).lines().next().map(|s| s.to_string()))
+}
+
 pub fn detect_shell_info() -> String {
     if cfg!(target_os = "windows") {
         detect_windows_shell()
@@ -25,16 +31,8 @@ fn detect_windows_shell() -> String {
             };
 
             // Try to get bash version
-            if let Ok(version_output) = Command::new("bash")
-                .arg("--version")
-                .output()
-            {
-                if version_output.status.success() {
-                    let output = String::from_utf8_lossy(&version_output.stdout);
-                    if let Some(first_line) = output.lines().next() {
-                        return format!("{} - {}", system_name, first_line);
-                    }
-                }
+            if let Some(version) = get_version_line("bash", &["--version"]) {
+                return format!("{} - {}", system_name, version);
             }
             return system_name.to_string();
         }
@@ -44,16 +42,8 @@ fn detect_windows_shell() -> String {
     if let Ok(shell) = env::var("SHELL") {
         if shell.contains("bash") || shell.contains("sh") {
             // Try to get bash version
-            if let Ok(version_output) = Command::new("bash")
-                .arg("--version")
-                .output()
-            {
-                if version_output.status.success() {
-                    let output = String::from_utf8_lossy(&version_output.stdout);
-                    if let Some(first_line) = output.lines().next() {
-                        return format!("Git Bash - {}", first_line);
-                    }
-                }
+            if let Some(version) = get_version_line("bash", &["--version"]) {
+                return format!("Git Bash - {}", version);
             }
             return "Git Bash".to_string();
         }
@@ -63,15 +53,8 @@ fn detect_windows_shell() -> String {
     if let Ok(powershell_path) = env::var("PSModulePath") {
         if !powershell_path.is_empty() {
             // Try to get PowerShell version
-            if let Ok(version_output) = Command::new("powershell")
-                .arg("-Command")
-                .arg("$PSVersionTable.PSVersion.ToString()")
-                .output()
-            {
-                if version_output.status.success() {
-                    let version = String::from_utf8_lossy(&version_output.stdout).trim().to_string();
-                    return format!("PowerShell {}", version);
-                }
+            if let Some(version) = get_version_line("powershell", &["-Command", "$PSVersionTable.PSVersion.ToString()"]) {
+                return format!("PowerShell {}", version.trim());
             }
             return "PowerShell".to_string();
         }
@@ -101,16 +84,8 @@ fn detect_unix_shell() -> String {
         };
 
         if let Some((cmd, args)) = version_cmd {
-            if let Ok(version_output) = Command::new(cmd)
-                .args(&args)
-                .output()
-            {
-                if version_output.status.success() {
-                    let output = String::from_utf8_lossy(&version_output.stdout);
-                    if let Some(first_line) = output.lines().next() {
-                        return first_line.to_string();
-                    }
-                }
+            if let Some(version) = get_version_line(cmd, &args) {
+                return version;
             }
         }
 

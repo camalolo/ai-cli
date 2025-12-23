@@ -2,9 +2,21 @@ use regex::Regex;
 use std::fs;
 use std::path::PathBuf;
 use difference::Changeset;
-use crate::sandbox::SANDBOX_ROOT;
+use crate::sandbox::get_sandbox_root;
 
 use crate::patch::apply_patch;
+
+fn confirm_change(original: &str, new_content: &str, filename: &str, operation_desc: &str) -> Result<bool, String> {
+    let changeset = Changeset::new(original, new_content, "\n");
+    println!("Diff preview for {} in '{}':", operation_desc, filename);
+    println!("{}", changeset);
+    println!("Apply this change? (y/n)");
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return Err("Failed to read user input".to_string());
+    }
+    Ok(input.trim().to_lowercase().starts_with('y'))
+}
 
 pub fn file_editor(
     subcommand: &str,
@@ -13,7 +25,7 @@ pub fn file_editor(
     replacement: Option<&str>,
     skip_confirmation: bool,
 ) -> String {
-    let file_path = PathBuf::from(&*SANDBOX_ROOT).join(filename);
+    let file_path = PathBuf::from(get_sandbox_root()).join(filename);
 
     match subcommand {
         "read" => match fs::read_to_string(&file_path) {
@@ -24,16 +36,10 @@ pub fn file_editor(
             let new_content = data.unwrap_or("");
             if !skip_confirmation {
                 let current_content = fs::read_to_string(&file_path).unwrap_or_default();
-                let changeset = Changeset::new(&current_content, new_content, "\n");
-                println!("Diff preview for writing to '{}':", filename);
-                println!("{}", changeset);
-                println!("Apply this change? (y/n)");
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input).is_err() {
-                    return "Failed to read user input".to_string();
-                }
-                if !input.trim().to_lowercase().starts_with('y') {
-                    return "Write operation cancelled by user".to_string();
+                match confirm_change(&current_content, new_content, filename, "writing to") {
+                    Ok(true) => {},
+                    Ok(false) => return "Write operation cancelled by user".to_string(),
+                    Err(e) => return e,
                 }
             }
             match fs::write(&file_path, new_content) {
@@ -94,16 +100,10 @@ pub fn file_editor(
                     Ok(content) => {
                         let new_content = re.replace_all(&content, replace_with);
                         if !skip_confirmation {
-                            let changeset = Changeset::new(&content, &new_content, "\n");
-                            println!("Diff preview for search and replace in '{}':", filename);
-                            println!("{}", changeset);
-                            println!("Apply this change? (y/n)");
-                            let mut input = String::new();
-                            if std::io::stdin().read_line(&mut input).is_err() {
-                                return "Failed to read user input".to_string();
-                            }
-                            if !input.trim().to_lowercase().starts_with('y') {
-                                return "Search and replace operation cancelled by user".to_string();
+                            match confirm_change(&content, &new_content, filename, "search and replace in") {
+                                Ok(true) => {},
+                                Ok(false) => return "Search and replace operation cancelled by user".to_string(),
+                                Err(e) => return e,
                             }
                         }
                         match fs::write(&file_path, new_content.as_ref()) {
@@ -134,16 +134,10 @@ pub fn file_editor(
                     match apply_patch(&original_content, diff_content) {
                         Ok(new_content) => {
                             if !skip_confirmation {
-                                let changeset = Changeset::new(&original_content, &new_content, "\n");
-                                println!("Diff preview for applying diff to '{}':", filename);
-                                println!("{}", changeset);
-                                println!("Apply this change? (y/n)");
-                                let mut input = String::new();
-                                if std::io::stdin().read_line(&mut input).is_err() {
-                                    return "Failed to read user input".to_string();
-                                }
-                                if !input.trim().to_lowercase().starts_with('y') {
-                                    return "Apply diff operation cancelled by user".to_string();
+                                match confirm_change(&original_content, &new_content, filename, "applying diff to") {
+                                    Ok(true) => {},
+                                    Ok(false) => return "Apply diff operation cancelled by user".to_string(),
+                                    Err(e) => return e,
                                 }
                             }
                             // Write the new content back to the file

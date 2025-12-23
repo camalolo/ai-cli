@@ -1,5 +1,5 @@
 use colored::{Color, Colorize};
-use reqwest::blocking::{Client, ClientBuilder};
+use reqwest::blocking::ClientBuilder;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -24,7 +24,7 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
         .connect_timeout(Duration::from_secs(NETWORK_TIMEOUT))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
         .build()
-        .unwrap_or_else(|_| crate::http::create_http_client().unwrap_or_else(|_| Client::new()));
+        .unwrap_or_else(|_| crate::http::create_http_client());
 
     let url = format!(
         "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}",
@@ -111,7 +111,7 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
                 let query_vector = tf_vector(query, &tfidf);
                 let query_graph = build_term_graph(query);
 
-                let mut scored_results: Vec<(f32, String, String, String)> = search_results
+                let scored_results: Vec<(f32, String, String, String)> = search_results
                     .into_iter()
                     .filter_map(|(title, link, content)| {
                         if content.starts_with("Error") || content.starts_with("Skipped") {
@@ -125,18 +125,13 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
                         let graph_similarity = graph_similarity(&query_graph, &doc_graph);
 
                         let combined_similarity = 0.7 * tfidf_similarity + 0.3 * graph_similarity;
-                        //println!(
-                        //    "Score for {}: TF-IDF={}, Graph={}, Combined={}",
-                        //    link, tfidf_similarity, graph_similarity, combined_similarity
-                        //);
                         Some((combined_similarity, title, link, content))
                     })
                     .collect();
 
-                scored_results
-                    .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
                 let filtered_results: Vec<_> = scored_results
                     .into_iter()
+                    .filter(|(score, _, _, _)| *score > 0.1)
                     .take(3)
                     .filter(|(score, _, _, _)| *score >= RELEVANCE_THRESHOLD)
                     .map(|(_, title, link, content)| {
@@ -149,7 +144,7 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
                     .collect();
 
                 if filtered_results.is_empty() {
-                    "No relevant results found, please ask the user if your should try a different search query.".to_string()
+                    "No relevant results found, please ask the user if you should try a different search query.".to_string()
                 } else {
                     serde_json::to_string(&filtered_results)
                         .unwrap_or("Error serializing results".to_string())

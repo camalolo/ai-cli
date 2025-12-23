@@ -35,7 +35,7 @@ To run AI CLI, you need to set up a `.aicli.conf` file in your home directory wi
 # AI Provider Configuration (Required)
 API_BASE_URL=https://generativelanguage.googleapis.com
 API_VERSION=v1beta
-MODEL=gemini-2.5-flash
+MODEL=gemini-1.5-flash
 API_KEY=your_api_key_here
 ```
 
@@ -63,7 +63,7 @@ ALPHA_VANTAGE_API_KEY=
 ```bash
 API_BASE_URL=https://generativelanguage.googleapis.com
 API_VERSION=v1beta
-MODEL=gemini-2.5-flash
+MODEL=gemini-1.5-flash
 API_KEY=your_gemini_api_key_here
 ```
 
@@ -138,7 +138,7 @@ If you were using the previous version, you can migrate your configuration:
    ```bash
    API_BASE_URL=https://generativelanguage.googleapis.com
    API_VERSION=v1beta
-   MODEL=gemini-2.5-flash
+   MODEL=gemini-1.5-flash
    ```
 
 3. Keep your existing `API_KEY` (renamed from `GEMINI_API_KEY`)
@@ -205,4 +205,4 @@ Contributions are welcome! Please feel free to submit pull requests or open issu
 
 ## License
 
-[Your License Here]
+MIT License

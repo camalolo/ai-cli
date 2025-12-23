@@ -2,6 +2,7 @@ use chrono::Local;
 use colored::{Color, Colorize};
 use serde_json::{json, Value};
 use reqwest::blocking::Client;
+use std::time::Duration;
 use crate::config::Config;
 use crate::spinner::Spinner;
 
@@ -33,7 +34,7 @@ impl ChatManager {
         &self.history
     }
 
-    pub fn new(config: Config) -> Self {
+    fn build_system_instruction() -> String {
         let today = Local::now().format("%Y-%m-%d").to_string();
         let os_name = if cfg!(target_os = "windows") {
             "Windows"
@@ -47,15 +48,18 @@ impl ChatManager {
 
         let shell_info = crate::shell::detect_shell_info();
 
-        let system_instruction = format!(
+        format!(
             "Today's date is {}. You are a proactive assistant running in a sandboxed {} terminal environment with a full set of command line utilities. The default shell is {}. Your role is to assist with coding tasks, file operations, online searches, email sending, and shell commands efficiently and decisively. Assume the current directory (the sandbox root) is the target for all commands. Take initiative to provide solutions, execute commands, and analyze results immediately without asking for confirmation unless the action is explicitly ambiguous (e.g., multiple repos) or potentially destructive (e.g., deleting files). Use the `execute_command` tool to interact with the system but only when needed. Deliver concise, clear responses. After running a command, always summarize its output immediately and proceed with logical next steps, without waiting for the user to prompt you further. When reading files or executing commands, summarize the results intelligently for the user without dumping raw output unless explicitly requested. Stay within the sandbox directory. Users can run shell commands directly with `!`, and you'll receive the output to assist further. Act confidently and anticipate the user's needs to streamline their workflow.",
             today, os_name, shell_info
-        );
+        )
+    }
+
+    pub fn new(config: Config) -> Self {
         ChatManager {
             config,
             history: Vec::new(), // Start empty; system_instruction is separate
             cleaned_up: false,
-            system_instruction,
+            system_instruction: Self::build_system_instruction(),
         }
     }
 
@@ -64,7 +68,10 @@ impl ChatManager {
     }
 
     pub fn send_message(&mut self, message: &str, skip_spinner: bool) -> Result<Value, String> {
-        let client = Client::new();
+        let client = Client::builder()
+            .timeout(Duration::from_secs(90))
+            .build()
+            .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
         // Add user message to history in OpenAI format
         let user_message = json!({
@@ -207,8 +214,8 @@ impl ChatManager {
             ]
         });
 
-        let mut spinner = Spinner::new();
-        if !skip_spinner {
+        let mut spinner = if skip_spinner { None } else { Some(Spinner::new()) };
+        if let Some(ref mut spinner) = spinner {
             spinner.start();
         }
 
@@ -220,16 +227,17 @@ impl ChatManager {
         if let Some(auth_header) = self.config.get_auth_header() {
             request = request.header("Authorization", auth_header);
         }
-        if let Some((key, value)) = self.config.get_auth_query() {
-            request = request.query(&[(key, value)]);
-        }
 
         let response = request
             .json(&body)
             .send()
             .map_err(|e| format!("API request failed: {}", e))?;
 
-        if !skip_spinner {
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err("Authentication failed. Please check your API key in ~/.aicli.conf".to_string());
+        }
+
+        if let Some(ref mut spinner) = spinner {
             spinner.stop();
         }
 

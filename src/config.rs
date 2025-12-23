@@ -1,5 +1,5 @@
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Configuration structure holding all settings for the AI CLI
 pub struct Config {
@@ -23,66 +23,55 @@ pub struct Config {
 }
 
 impl Config {
+    fn get_env_or_default(key: &str, default: &str) -> String {
+        env::var(key).unwrap_or_else(|_| default.to_string())
+    }
+
     /// Load configuration from ~/.aicli.conf file
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
         let home_dir = ::dirs::home_dir()
             .expect("Could not determine home directory")
             .to_string_lossy()
             .to_string();
-        
-        let config_path = format!("{}/.aicli.conf", home_dir);
-        
+
+        let config_path = PathBuf::from(&home_dir).join(".aicli.conf").to_string_lossy().to_string();
+
         // Check if config file exists
         if !Path::new(&config_path).exists() {
             return Err(format!(
                 "Configuration file not found at {}\n\
                  Please create ~/.aicli.conf with your settings.\n\
-                 See readme.md for configuration examples.",
+                  See readme.md for configuration examples.",
                 config_path
             ).into());
         }
-        
+
         // Load environment variables from config file
         dotenv::from_path(&config_path)
             .map_err(|e| format!("Failed to load config file: {}", e))?;
-        
+
         // Load values with defaults
         let config = Config {
             // AI Provider Configuration
-            api_base_url: env::var("API_BASE_URL")
-                .unwrap_or_else(|_| "https://generativelanguage.googleapis.com".to_string()),
-            api_version: env::var("API_VERSION")
-                .unwrap_or_else(|_| "v1beta".to_string()),
-            model: env::var("MODEL")
-                .unwrap_or_else(|_| "gemini-2.5-flash".to_string()),
-            api_key: env::var("API_KEY")
-                .unwrap_or_else(|_| "<NO KEY>".to_string()),
-            
+            api_base_url: Self::get_env_or_default("API_BASE_URL", "https://generativelanguage.googleapis.com"),
+            api_version: Self::get_env_or_default("API_VERSION", "v1beta"),
+            model: Self::get_env_or_default("MODEL", "gemini-2.5-flash"),
+            api_key: Self::get_env_or_default("API_KEY", ""),
+
             // SMTP Configuration with defaults
-            smtp_server: env::var("SMTP_SERVER_IP")
-                .unwrap_or_else(|_| "localhost".to_string()),
-            smtp_username: env::var("SMTP_USERNAME")
-                .unwrap_or_else(|_| "".to_string()),
-            smtp_password: env::var("SMTP_PASSWORD")
-                .unwrap_or_else(|_| "".to_string()),
-            destination_email: env::var("DESTINATION_EMAIL")
-                .unwrap_or_else(|_| "".to_string()),
-            sender_email: env::var("SENDER_EMAIL")
-                .unwrap_or_else(|_| "".to_string()),
-            
+            smtp_server: Self::get_env_or_default("SMTP_SERVER_IP", "localhost"),
+            smtp_username: Self::get_env_or_default("SMTP_USERNAME", ""),
+            smtp_password: Self::get_env_or_default("SMTP_PASSWORD", ""),
+            destination_email: Self::get_env_or_default("DESTINATION_EMAIL", ""),
+            sender_email: Self::get_env_or_default("SENDER_EMAIL", ""),
+
             // Optional: Search APIs (empty if not set)
-            google_search_api_key: env::var("GOOGLE_SEARCH_API_KEY")
-                .unwrap_or_else(|_| "".to_string()),
-            google_search_engine_id: env::var("GOOGLE_SEARCH_ENGINE_ID")
-                .unwrap_or_else(|_| "".to_string()),
-            alpha_vantage_api_key: env::var("ALPHA_VANTAGE_API_KEY")
-                .unwrap_or_else(|_| "".to_string()),
+            google_search_api_key: Self::get_env_or_default("GOOGLE_SEARCH_API_KEY", ""),
+            google_search_engine_id: Self::get_env_or_default("GOOGLE_SEARCH_ENGINE_ID", ""),
+            alpha_vantage_api_key: Self::get_env_or_default("ALPHA_VANTAGE_API_KEY", ""),
         };
         
-        // Validate required fields
-        if config.api_key.is_empty() {
-            return Err("API_KEY is required in ~/.aicli.conf".into());
-        }
+        // API key validation moved to runtime on 401 error
         
         Ok(config)
     }
@@ -93,6 +82,8 @@ impl Config {
         // Google Gemini also supports OpenAI-compatible endpoints
         format!("{}/{}/chat/completions", self.api_base_url, self.api_version)
     }
+
+
     
     
     /// Get authentication method - always use Bearer token in header
@@ -104,10 +95,7 @@ impl Config {
         }
     }
     
-    /// Get query parameter for authentication - no longer used
-    pub fn get_auth_query(&self) -> Option<(&'static str, String)> {
-        None
-    }
+
     
     /// Display configuration summary (for debug mode)
     pub fn display_summary(&self) {

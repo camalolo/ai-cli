@@ -1,11 +1,14 @@
 use colored::{Color, Colorize};
-use reqwest::blocking::{Client, ClientBuilder};
+use reqwest::blocking::ClientBuilder;
 use reqwest::StatusCode;
 use scraper::{Html, Selector};
+use std::sync::OnceLock;
 use std::time::Duration;
 use crate::http;
 
 pub const NETWORK_TIMEOUT: u64 = 30;
+
+static SELECTOR: OnceLock<Selector> = OnceLock::new();
 
 pub fn scrape_url(url: &str) -> String {
     println!("{} {}", "ai-cli is reading:".color(Color::Cyan).bold(), url);
@@ -15,7 +18,7 @@ pub fn scrape_url(url: &str) -> String {
         .connect_timeout(Duration::from_secs(NETWORK_TIMEOUT))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
         .build()
-        .unwrap_or_else(|_| http::create_http_client().unwrap_or_else(|_| Client::new()));
+        .unwrap_or_else(|_| http::create_http_client());
 
     match client.get(url).send() {
         Ok(resp) => {
@@ -26,24 +29,14 @@ pub fn scrape_url(url: &str) -> String {
                         Ok(text) => {
                             let document = Html::parse_document(&text);
                             // Target readable content: paragraphs, headings, articles
-                            let selector =
-                                Selector::parse("p, h1, h2, h3, h4, h5, h6, article").expect("Failed to parse CSS selector");
+                            let selector = SELECTOR.get_or_init(|| Selector::parse("p, h1, h2, h3, h4, h5, h6, article").expect("Failed to parse CSS selector"));
                             let readable_text: Vec<String> = document
-                                .select(&selector)
-                                .flat_map(|element| {
-                                    // Only include text from elements not inside script/style
-                                    if element.value().name() != "script"
-                                        && element.value().name() != "style"
-                                    {
-                                        element
-                                            .text()
-                                            .map(|t| t.trim().to_string())
-                                            .collect::<Vec<_>>()
-                                    } else {
-                                        Vec::new()
-                                    }
-                                })
-                                .filter(|t| !t.is_empty()) // Skip empty strings
+                                .select(selector)
+                                .filter(|element| element.value().name() != "script" && element.value().name() != "style")
+                                .flat_map(|element| element.text())
+                                .map(|t| t.trim())
+                                .filter(|t| !t.is_empty())
+                                .map(|t| t.to_string())
                                 .collect();
 
                             if readable_text.is_empty() {

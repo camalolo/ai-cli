@@ -8,7 +8,7 @@ use std::fs::File;
 use std::os::fd::{AsRawFd, FromRawFd};
 use pty::fork::*;
 
-use crate::sandbox::SANDBOX_ROOT;
+use crate::sandbox::get_sandbox_root;
 
 pub fn execute_command(command: &str) -> String {
      // Disable echo on stdin to hide passwords during command execution
@@ -27,7 +27,7 @@ pub fn execute_command(command: &str) -> String {
 
      let (program, args) = get_command_parts(command);
 
-    let fork = Fork::from_ptmx().unwrap();
+    let fork = Fork::from_ptmx().expect("Failed to create PTY");
     match fork {
         Fork::Parent(pid, master) => {
             let stop = Arc::new(AtomicBool::new(false));
@@ -124,9 +124,9 @@ pub fn execute_command(command: &str) -> String {
             }
             let _ = Command::new(&program)
                 .args(&args)
-                .current_dir(&*SANDBOX_ROOT)
+                .current_dir(get_sandbox_root())
                 .status()
-                .unwrap();
+                .expect("Failed to execute command");
             std::process::exit(0);
         }
     }
@@ -138,7 +138,7 @@ fn get_command_parts(command: &str) -> (String, Vec<String>) {
         // Use bwrap
         let args = vec![
             "--ro-bind".to_string(), "/".to_string(), "/".to_string(),
-            "--bind".to_string(), SANDBOX_ROOT.clone(), SANDBOX_ROOT.clone(),
+            "--bind".to_string(), get_sandbox_root().clone(), get_sandbox_root().clone(),
             "--dev".to_string(), "/dev".to_string(),
             "--proc".to_string(), "/proc".to_string(),
             "/bin/sh".to_string(), "-c".to_string(), command.to_string(),

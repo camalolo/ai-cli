@@ -1,8 +1,9 @@
 use clap::Parser;
 use colored::{Color, Colorize};
-use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use build_time::build_time_local;
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 
 mod config;
 use config::Config;
@@ -26,7 +27,7 @@ use crate::chat::ChatManager;
 use crate::tools::{display_response, process_tool_calls};
 use crate::shell::interactive_shell;
 use crate::command::execute_command;
-use sandbox::SANDBOX_ROOT;
+use sandbox::get_sandbox_root;
 
 const COMPILE_TIME: &str = build_time_local!("%Y-%m-%d %H:%M:%S");
 
@@ -141,7 +142,7 @@ fn main() {
     );
     println!(
         "{}",
-        format!("Working in sandbox: {}", *SANDBOX_ROOT).color(Color::Cyan)
+        format!("Working in sandbox: {}", *get_sandbox_root()).color(Color::Cyan)
     );
     println!(
         "{}",
@@ -149,7 +150,10 @@ fn main() {
     );
     println!();
 
-    // Simple input handling for better Windows compatibility
+    // Initialize rustyline editor
+    let mut rl = DefaultEditor::new().expect("Failed to create readline editor");
+
+    // Main input loop with rustyline
     loop {
         let conv_length: usize = chat_manager.lock().map(|manager| {
             manager
@@ -176,13 +180,18 @@ fn main() {
             }
         };
 
-        print!("{}", prompt);
-        io::stdout().flush().expect("Failed to flush stdout");
+        println!(); // Add blank line before prompt
 
-        let mut user_input = String::new();
-        match io::stdin().read_line(&mut user_input) {
-            Ok(_) => {
-                let user_input = user_input.trim();
+        let readline = rl.readline(&prompt);
+
+        match readline {
+            Ok(line) => {
+                let user_input: &str = line.trim();
+
+                // Add to history (skip empty lines and special commands)
+                if !user_input.is_empty() && !user_input.to_lowercase().starts_with("exit") && !user_input.to_lowercase().starts_with("clear") {
+                    rl.add_history_entry(user_input).ok();
+                }
 
                 match user_input.to_lowercase().as_str() {
                     "exit" => {
@@ -207,7 +216,7 @@ fn main() {
                 }
 
                 if let Some(command) = user_input.strip_prefix('!') {
-                    let command = command.trim();
+                    let command: &str = command.trim();
                     if command.is_empty() {
                         let output = interactive_shell();
                         let llm_input = format!("User ran interactive shell session with output:\n{}", output);
@@ -249,8 +258,18 @@ fn main() {
                     }
                 }
             }
-            Err(e) => {
-                println!("{}", format!("Input error: {}", e).color(Color::Red));
+            Err(ReadlineError::Interrupted) => {
+                // Handle Ctrl-C
+                println!("{}", "Interrupted".color(Color::Yellow));
+                continue;
+            }
+            Err(ReadlineError::Eof) => {
+                // Handle Ctrl-D
+                println!("{}", "Goodbye!".color(Color::Cyan).bold());
+                break;
+            }
+            Err(err) => {
+                println!("{}", format!("Readline error: {}", err).color(Color::Red));
                 continue;
             }
         }

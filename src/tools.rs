@@ -1,6 +1,7 @@
 use colored::{Color, Colorize};
 use serde_json::{json, Value};
 use std::io::{self, Read};
+use regex::Regex;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -9,6 +10,8 @@ use crate::search::search_online;
 use crate::email::send_email;
 use crate::alpha_vantage::alpha_vantage_query;
 use crate::file_edit::file_editor;
+use termimad::MadSkin;
+use termimad::crossterm::style::Color as TermColor;
 use crate::chat::ChatManager;
 
 pub fn process_execute_command(args: &Value) -> String {
@@ -37,29 +40,29 @@ pub fn process_execute_command(args: &Value) -> String {
             println!("Executing command: {}", cmd.color(Color::Magenta));
             let result = execute_command(cmd);
             println!();
-            format!("[Tool result] execute_command: {}", result)
+            normalize_output(&format!("[Tool result] execute_command: {}", result))
         } else {
-            "[Tool result] execute_command: User rejected the command execution.".to_string()
+            normalize_output("[Tool result] execute_command: User rejected the command execution.")
         }
     } else {
-        "[Tool error] execute_command: Missing 'command' parameter".to_string()
+        normalize_output("[Tool error] execute_command: Missing 'command' parameter")
     }
 }
 
 pub fn process_search_online(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>) -> String {
     let query = args.get("query").and_then(|q| q.as_str());
     if let Some(q) = query {
-        let api_key_result = chat_manager.lock().map(|manager| manager.get_google_search_api_key().to_string());
-        let engine_id_result = chat_manager.lock().map(|manager| manager.get_google_search_engine_id().to_string());
-        match (api_key_result, engine_id_result) {
-            (Ok(api_key), Ok(engine_id)) => {
+        match chat_manager.lock() {
+            Ok(manager) => {
+                let api_key = manager.get_google_search_api_key().to_string();
+                let engine_id = manager.get_google_search_engine_id().to_string();
                 let result = search_online(q, &api_key, &engine_id);
-                format!("[Tool result] search_online: {}", result)
+                normalize_output(&format!("[Tool result] search_online: {}", result))
             }
-            _ => "[Tool error] search_online: Failed to access configuration".to_string(),
+            Err(_) => normalize_output("[Tool error] search_online: Failed to access configuration"),
         }
     } else {
-        "[Tool error] search_online: Missing 'query' parameter".to_string()
+        normalize_output("[Tool error] search_online: Missing 'query' parameter")
     }
 }
 
@@ -71,14 +74,32 @@ pub fn process_send_email(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>, 
         let smtp_server_result = chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e)).map(|manager| manager.get_smtp_server().to_string());
         match smtp_server_result {
             Ok(smtp_server) => match send_email(subj, bod, &smtp_server, debug) {
-                Ok(msg) => format!("[Tool result] send_email: {}", msg),
-                Err(e) => format!("[Tool error] send_email: {}", e),
+                Ok(msg) => normalize_output(&format!("[Tool result] send_email: {}", msg)),
+                Err(e) => normalize_output(&format!("[Tool error] send_email: {}", e)),
             },
-            Err(e) => format!("[Tool error] send_email: {}", e),
+            Err(e) => normalize_output(&format!("[Tool error] send_email: {}", e)),
         }
     } else {
-        "[Tool error] send_email: Missing required parameters".to_string()
+        normalize_output("[Tool error] send_email: Missing required parameters")
     }
+}
+
+/// Normalizes LLM output text by removing excessive whitespace and ensuring consistent formatting
+fn normalize_output(text: &str) -> String {
+    let trimmed = text.trim();
+    let normalized_line_endings = trimmed.replace("\r\n", "\n").replace('\r', "\n");
+    // Use regex to limit consecutive newlines to 2
+    let re = Regex::new(r"\n{3,}").unwrap();
+    let limited_newlines = re.replace_all(&normalized_line_endings, "\n\n");
+    limited_newlines.trim_end().to_string()
+}
+
+/// Displays normalized LLM output with Markdown rendering
+pub fn display_llm_output(content: &str, _color: Color) {
+    let normalized = normalize_output(content);
+    let mut skin = MadSkin::default();
+    skin.paragraph.set_fg(TermColor::Yellow);
+    skin.print_text(&normalized);
 }
 
 pub fn display_response(response: &Value) {
@@ -86,52 +107,59 @@ pub fn display_response(response: &Value) {
         for choice in choices {
             if let Some(message) = choice.get("message") {
                 if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
-                    println!("{}", content.color(Color::Yellow));
+                    display_llm_output(content, Color::Yellow);
                 }
             }
         }
     }
 }
 
+fn extract_tool_calls(response: &Value) -> Vec<(String, Value)> {
+    response
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .unwrap_or(&vec![])
+        .iter()
+        .flat_map(|choice| {
+            choice
+                .get("message")
+                .and_then(|m| m.get("tool_calls"))
+                .and_then(|tc| tc.as_array())
+                .map(|tool_calls| {
+                    tool_calls
+                        .iter()
+                        .filter_map(|tc| {
+                            let func = tc.get("function");
+                            let name = func
+                                .and_then(|f| f.get("name"))
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let args = func
+                                .and_then(|f| f.get("arguments"))
+                                .and_then(|a| serde_json::from_str::<Value>(a.as_str()?).ok())
+                                .unwrap_or(json!({}));
+                            if !name.is_empty() {
+                                Some((name, args))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool, quiet: bool) -> Result<(), String> {
     let mut current_response = response.clone();
 
     loop {
-        let tool_calls: Vec<(String, Value)> = current_response
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .unwrap_or(&vec![])
-            .iter()
-            .flat_map(|choice| {
-                choice
-                    .get("message")
-                    .and_then(|m| m.get("tool_calls"))
-                    .and_then(|tc| tc.as_array())
-                    .map(|tool_calls| {
-                        tool_calls
-                            .iter()
-                            .filter_map(|tc| {
-                                let func = tc.get("function");
-                                let name = func
-                                    .and_then(|f| f.get("name"))
-                                    .and_then(|n| n.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let args = func
-                                    .and_then(|f| f.get("arguments"))
-                                    .and_then(|a| serde_json::from_str::<Value>(a.as_str()?).ok())
-                                    .unwrap_or(json!({}));
-                                if !name.is_empty() {
-                                    Some((name, args))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            })
-            .collect();
+        let tool_calls = extract_tool_calls(&current_response);
+        if debug && !tool_calls.is_empty() {
+            println!("Tool calls found: {:?}", tool_calls);
+        }
 
         if tool_calls.is_empty() {
             break;
@@ -155,10 +183,10 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
                         if result.starts_with("Error") || result.starts_with("Skipped") {
                             println!("Scrape failed: {}", result);
                         }
-                        results.push(format!("[Tool result] scrape_url: {}", result));
+                        results.push(normalize_output(&format!("[Tool result] scrape_url: {}", result)));
                     } else {
                         results.push(
-                            "[Tool error] scrape_url: Missing 'url' parameter".to_string(),
+                            normalize_output("[Tool error] scrape_url: Missing 'url' parameter"),
                         );
                     }
                 }
@@ -170,22 +198,23 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
                     let function = args.get("function").and_then(|f| f.as_str());
                     let symbol = args.get("symbol").and_then(|s| s.as_str());
                     if let (Some(func), Some(sym)) = (function, symbol) {
-                        let api_key = {
-                            let manager = chat_manager.lock().unwrap();
-                            manager.get_alpha_vantage_api_key().to_string()
-                        };
-                        match alpha_vantage_query(func, sym, &api_key) {
-                            Ok(result) => results.push(format!(
-                                "[Tool result] alpha_vantage_query: {}",
-                                result
-                            )),
-                            Err(e) => results
-                                .push(format!("[Tool error] alpha_vantage_query: {}", e)),
+                        match chat_manager.lock() {
+                            Ok(manager) => {
+                                let api_key = manager.get_alpha_vantage_api_key().to_string();
+                                match alpha_vantage_query(func, sym, &api_key) {
+                                    Ok(result) => results.push(normalize_output(&format!(
+                                        "[Tool result] alpha_vantage_query: {}",
+                                        result
+                                    ))),
+                                    Err(e) => results
+                                        .push(normalize_output(&format!("[Tool error] alpha_vantage_query: {}", e))),
+                                }
+                            }
+                            Err(_) => results.push(normalize_output("[Tool error] alpha_vantage_query: Failed to access configuration")),
                         }
                     } else {
                         results.push(
-                            "[Tool error] alpha_vantage_query: Missing required parameters"
-                                .to_string(),
+                            normalize_output("[Tool error] alpha_vantage_query: Missing required parameters"),
                         );
                     }
                 }
@@ -198,20 +227,21 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
                     if let (Some(subcmd), Some(fname)) = (subcommand, filename) {
                         let skip_confirmation = matches!(subcmd, "read" | "search"); // Only skip for non-destructive ops
                         let result = file_editor(subcmd, fname, data, replacement, skip_confirmation);
-                        results.push(format!("[Tool result] file_editor: {}", result));
+                        results.push(normalize_output(&format!("[Tool result] file_editor: {}", result)));
                     } else {
-                        results.push("[Tool error] file_editor: Missing required parameters 'subcommand' or 'filename'".to_string());
+                        results.push(normalize_output("[Tool error] file_editor: Missing required parameters 'subcommand' or 'filename'"));
                     }
                 }
                 _ => {
-                    results.push(format!("[Tool error] Unknown function: {}", func_name));
+                    results.push(normalize_output(&format!("[Tool error] Unknown function: {}", func_name)));
                 }
             }
         }
 
         if !results.is_empty() {
             let combined_results = results.join("\n");
-            current_response = chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e))?.send_message(&combined_results, quiet)?;
+            let normalized_results = normalize_output(&combined_results);
+            current_response = chat_manager.lock().map_err(|e| format!("Failed to acquire chat manager lock: {}", e))?.send_message(&normalized_results, quiet)?;
             display_response(&current_response);
         } else {
             break;
