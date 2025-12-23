@@ -59,16 +59,7 @@ impl Config {
 
 
     
-    
-    /// Get authentication method - always use Bearer token in header
-    pub fn get_auth_header(&self) -> Option<String> {
-        if self.api_key.is_empty() {
-            None
-        } else {
-            Some(format!("Bearer {}", self.api_key))
-        }
-    }
-    
+
 
     
     /// Display configuration summary (for debug mode)

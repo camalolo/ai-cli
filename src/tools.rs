@@ -2,7 +2,7 @@ use colored::{Color, Colorize};
 use serde_json::{json, Value};
 use regex::Regex;
 use std::sync::Arc;
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 use crate::command::execute_command;
 use crate::search::search_online;
 use crate::email::send_email;
@@ -13,7 +13,7 @@ use termimad::crossterm::style::Color as TermColor;
 use termimad::crossterm::style::Attribute;
 
 use crate::chat::ChatManager;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 
 pub fn process_execute_command(args: &Value, _debug: bool, allow_commands: bool) -> (String, bool) {
     let command = args.get("command").and_then(|c| c.as_str());
@@ -40,35 +40,28 @@ pub fn process_execute_command(args: &Value, _debug: bool, allow_commands: bool)
     }
 }
 
-pub fn process_search_online(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>) -> (String, bool) {
+pub async fn process_search_online(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>) -> (String, bool) {
     let query = args.get("query").and_then(|q| q.as_str());
     if let Some(q) = query {
-        let manager = match chat_manager.lock() {
-            Ok(m) => m,
-            Err(_) => return (normalize_output("[Tool error] search_online: Failed to access configuration"), false),
-        };
+        let manager = chat_manager.lock().await;
         let api_key = manager.get_google_search_api_key().to_string();
         let engine_id = manager.get_google_search_engine_id().to_string();
-        let result = search_online(q, &api_key, &engine_id);
+        let result = search_online(q, &api_key, &engine_id).await;
         (normalize_output(&format!("[Tool result] search_online: {}", result)), false)
     } else {
         (normalize_output("[Tool error] search_online: Missing 'query' parameter"), false)
     }
 }
 
-pub fn process_send_email(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool) -> (String, bool) {
+pub async fn process_send_email(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool) -> (String, bool) {
     let subject = args.get("subject").and_then(|s| s.as_str());
     let body = args.get("body").and_then(|b| b.as_str());
 
     if let (Some(subj), Some(bod)) = (subject, body) {
-        match chat_manager.lock() {
-            Ok(manager) => {
-                let config = manager.get_config();
-                match send_email(subj, bod, config, debug) {
-                    Ok(msg) => (normalize_output(&format!("[Tool result] send_email: {}", msg)), false),
-                    Err(e) => (normalize_output(&format!("[Tool error] send_email: {}", e)), false),
-                }
-            }
+        let manager = chat_manager.lock().await;
+        let config = manager.get_config();
+        match send_email(subj, bod, config, debug).await {
+            Ok(msg) => (normalize_output(&format!("[Tool result] send_email: {}", msg)), false),
             Err(e) => (normalize_output(&format!("[Tool error] send_email: {}", e)), false),
         }
     } else {
@@ -167,7 +160,7 @@ fn extract_tool_calls(response: &Value) -> Vec<(String, Value)> {
         .collect()
 }
 
-pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool, quiet: bool, allow_commands: bool) -> Result<()> {
+pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool, quiet: bool, allow_commands: bool) -> Result<()> {
     let mut current_response = response.clone();
 
     loop {
@@ -190,7 +183,7 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
                     if rejected { rejection_occurred = true; }
                 }
                 "search_online" => {
-                    let (result, rejected) = process_search_online(&args, chat_manager);
+                    let (result, rejected) = process_search_online(&args, chat_manager).await;
                     results.push(result);
                     if rejected { rejection_occurred = true; }
                 }
@@ -214,7 +207,7 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
                 "send_email" => {
                     let subject = args.get("subject").and_then(|s| s.as_str()).unwrap_or("unknown");
                     println!("ai-cli is sending email: {}", subject.color(Color::Cyan).bold());
-                    let (result, rejected) = process_send_email(&args, chat_manager, debug);
+                    let (result, rejected) = process_send_email(&args, chat_manager, debug).await;
                     results.push(result);
                     if rejected { rejection_occurred = true; }
                 }
@@ -222,9 +215,9 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
                       let function = args.get("function").and_then(|f| f.as_str());
                       let symbol = args.get("symbol").and_then(|s| s.as_str());
                       let outputsize = args.get("outputsize").and_then(|s| s.as_str());
-                      if let (Some(func), Some(sym)) = (function, symbol) {
-                          let api_key = chat_manager.lock().map_err(|e| anyhow!("Failed to acquire chat manager lock: {}", e))?.get_alpha_vantage_api_key().to_string();
-                          match alpha_vantage_query(func, sym, &api_key, outputsize) {
+                       if let (Some(func), Some(sym)) = (function, symbol) {
+                           let api_key = chat_manager.lock().await.get_alpha_vantage_api_key().to_string();
+                           match alpha_vantage_query(func, sym, &api_key, outputsize).await {
                              Ok(result) => results.push(normalize_output(&format!(
                                  "[Tool result] alpha_vantage_query: {}",
                                  result
@@ -263,7 +256,7 @@ pub fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager
         if !results.is_empty() {
             let combined_results = results.join("\n");
             let normalized_results = normalize_output(&combined_results);
-            current_response = chat_manager.lock().map_err(|e| anyhow!("Failed to acquire chat manager lock: {}", e))?.send_message(&normalized_results, quiet)?;
+            current_response = chat_manager.lock().await.send_message(&normalized_results, quiet).await?;
             display_response(&current_response);
             add_block_spacing();
             if rejection_occurred {

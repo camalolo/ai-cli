@@ -1,10 +1,11 @@
 use clap::Parser;
 use anyhow::Result;
 use colored::{Color, Colorize};
-use std::sync::{Arc, Mutex};
-use build_time::build_time_local;
-use rustyline::error::ReadlineError;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
+use build_time::build_time_local;
 
 mod config;
 use config::Config;
@@ -48,7 +49,8 @@ struct Args {
     allow_commands: bool,
 }
 
-fn main() -> Result<(), anyhow::Error> {
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
     let args = Args::parse();
 
@@ -92,14 +94,7 @@ fn main() -> Result<(), anyhow::Error> {
     }
 
     let chat_manager = Arc::new(Mutex::new(ChatManager::new(config)));
-    let chat_manager_clone = Arc::clone(&chat_manager);
-
-    ctrlc::set_handler(move || {
-        let mut manager = chat_manager_clone.lock().unwrap_or_else(|e| {
-            eprintln!("Failed to acquire chat manager lock: {}", e);
-            std::process::exit(1);
-        });
-        manager.cleanup(true);
+    ctrlc::set_handler(|| {
         std::process::exit(0);
     })
     .expect("Error setting Ctrl-C handler");
@@ -107,7 +102,7 @@ fn main() -> Result<(), anyhow::Error> {
     // Handle single prompt mode
     if let Some(prompt) = args.prompt {
         println!("{}", "Processing single prompt...".color(Color::Cyan));
-        let response = match chat_manager.lock().unwrap().send_message(&prompt, true) {
+        let response = match chat_manager.lock().await.send_message(&prompt, true).await {
             Ok(resp) => {
                 if args.debug {
                     println!("{}", "=== Raw Response ===".color(Color::Cyan));
@@ -118,16 +113,16 @@ fn main() -> Result<(), anyhow::Error> {
             },
             Err(e) => {
                 println!("{}", format!("Error: {}", e).color(Color::Red));
-                chat_manager.lock().unwrap().cleanup(false);
+                chat_manager.lock().await.cleanup(false);
                 return Err(e);
             }
         };
         display_response(&response);
         crate::tools::add_block_spacing();
-        if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, true, args.allow_commands) {
+        if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, true, args.allow_commands).await {
             println!("{}", format!("Error processing tool calls: {}", e).color(Color::Red));
         }
-        chat_manager.lock().unwrap().cleanup(false);
+        chat_manager.lock().await.cleanup(false);
         return Ok(());
     }
 
@@ -156,7 +151,8 @@ fn main() -> Result<(), anyhow::Error> {
 
     // Main input loop with rustyline
     loop {
-        let conv_length: usize = chat_manager.lock().map(|manager| {
+        let conv_length: usize = {
+            let manager = chat_manager.lock().await;
             manager
                 .get_history()
                 .iter()
@@ -164,10 +160,7 @@ fn main() -> Result<(), anyhow::Error> {
                     msg.get("content").and_then(|c| c.as_str()).map(|s| s.len())
                 })
                 .sum()
-        }).unwrap_or_else(|e| {
-            println!("Failed to acquire chat manager lock: {}", e);
-            0
-        });
+        };
 
         let prompt = {
             #[cfg(target_os = "windows")]
@@ -198,7 +191,7 @@ fn main() -> Result<(), anyhow::Error> {
                         break;
                     }
                     "clear" => {
-                        chat_manager.lock().unwrap().create_chat();
+                        chat_manager.lock().await.create_chat();
                         println!(
                             "{}",
                             "Conversation cleared! Starting fresh.".color(Color::Cyan)
@@ -219,33 +212,27 @@ fn main() -> Result<(), anyhow::Error> {
                     if command.is_empty() {
                         let output = interactive_shell(args.debug);
                         let llm_input = format!("User ran interactive shell session with output:\n{}", output);
-                        match chat_manager.lock() {
-                            Ok(mut mgr) => match mgr.send_message(&llm_input, false) {
-                                Ok(response) => {
-                                    display_response(&response);
-                                    crate::tools::add_block_spacing();
-                                },
-                                Err(e) => println!("{}", format!("Error: {}", e).color(Color::Red)),
+                        match chat_manager.lock().await.send_message(&llm_input, false).await {
+                            Ok(response) => {
+                                display_response(&response);
+                                crate::tools::add_block_spacing();
                             },
-                            Err(e) => println!("{}", format!("Lock error: {}", e).color(Color::Red)),
+                            Err(e) => println!("{}", format!("Error: {}", e).color(Color::Red)),
                         }
                     } else {
                         let output = execute_command(command).unwrap_or_else(|e| e.to_string());
                         let llm_input = format!("User ran command '!{}' with output: {}", command, output);
                         println!("{}", output);
-                        match chat_manager.lock() {
-                            Ok(mut mgr) => match mgr.send_message(&llm_input, false) {
-                                Ok(response) => {
-                                    display_response(&response);
-                                    crate::tools::add_block_spacing();
-                                },
-                                Err(e) => println!("{}", format!("Error: {}", e).color(Color::Red)),
+                        match chat_manager.lock().await.send_message(&llm_input, false).await {
+                            Ok(response) => {
+                                display_response(&response);
+                                crate::tools::add_block_spacing();
                             },
-                            Err(e) => println!("{}", format!("Lock error: {}", e).color(Color::Red)),
+                            Err(e) => println!("{}", format!("Error: {}", e).color(Color::Red)),
                         }
                     }
                     } else {
-                        let response = match chat_manager.lock().unwrap().send_message(user_input, false) {
+                        let response = match chat_manager.lock().await.send_message(user_input, false).await {
                             Ok(resp) => resp,
                             Err(e) => {
                                 println!(
@@ -260,7 +247,7 @@ fn main() -> Result<(), anyhow::Error> {
                         display_response(&response);
                     crate::tools::add_block_spacing();
 
-                    if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, false, false) {
+                    if let Err(e) = process_tool_calls(&response, &chat_manager, args.debug, false, false).await {
                         println!("{}", format!("Error processing tool calls: {}", e).color(Color::Red));
                     }
                 }
@@ -282,7 +269,7 @@ fn main() -> Result<(), anyhow::Error> {
         }
     }
 
-    chat_manager.lock().unwrap().cleanup(false);
+    chat_manager.lock().await.cleanup(false);
 
     Ok(())
 }

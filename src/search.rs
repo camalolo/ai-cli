@@ -7,7 +7,7 @@ use textdistance::str;
 
 const RELEVANCE_THRESHOLD: f32 = 0.05;
 
-pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
+pub async fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
     if api_key.is_empty() || engine_id.is_empty() {
         return "Google Search API is not configured. Please set GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID in ~/.aicli.conf".to_string();
     }
@@ -19,7 +19,7 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
     );
 
     // Create a client with timeout
-    let client = crate::http::create_http_client();
+    let client = crate::http::create_async_http_client();
 
     let url = format!(
         "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}",
@@ -28,9 +28,9 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
         ::urlencoding::encode(query)
     );
 
-    match client.get(&url).send() {
+    match client.get(&url).send().await {
         Ok(response) => {
-            let json: Value = match response.json() {
+            let json: Value = match response.json().await {
                 Ok(j) => j,
                 Err(e) => return format!("Failed to parse search response: {}", e),
             };

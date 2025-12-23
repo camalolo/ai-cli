@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
-use lettre::{Message, SmtpTransport, Transport};
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use std::time::Duration;
 
-pub fn send_email(subject: &str, body: &str, config: &crate::config::Config, _debug: bool) -> Result<String> {
+pub async fn send_email(subject: &str, body: &str, config: &crate::config::Config, _debug: bool) -> Result<String> {
     log::debug!("=== Email Debug Info ===");
     log::debug!("SMTP Server: {}", config.smtp_server);
     log::debug!("Subject: {}", subject);
@@ -37,7 +37,7 @@ pub fn send_email(subject: &str, body: &str, config: &crate::config::Config, _de
     let mailer = if config.smtp_server == "localhost" {
         log::debug!("Using localhost configuration (no auth)");
         // For localhost, try without auth
-        SmtpTransport::builder_dangerous(&config.smtp_server)
+        AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.smtp_server)
             .port(25)
             .timeout(Some(Duration::from_secs(5)))
             .build()
@@ -54,7 +54,7 @@ pub fn send_email(subject: &str, body: &str, config: &crate::config::Config, _de
 
         if let Some(creds) = creds {
             log::debug!("Building SMTP transport with authentication...");
-            match SmtpTransport::relay(&config.smtp_server) {
+            match AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp_server) {
                 Ok(relay) => {
                     log::debug!("SMTP relay created successfully, adding credentials...");
                     // Try port 25 first (plain SMTP), then fall back to 587 if needed
@@ -70,7 +70,7 @@ pub fn send_email(subject: &str, body: &str, config: &crate::config::Config, _de
         } else {
             log::debug!("No SMTP credentials found, trying without authentication...");
             // Try without authentication for local/trusted servers
-            let mailer = SmtpTransport::builder_dangerous(&config.smtp_server).port(25).timeout(Some(Duration::from_secs(5))).build();
+            let mailer = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.smtp_server).port(25).timeout(Some(Duration::from_secs(5))).build();
             log::debug!("SMTP transport created without authentication");
             mailer
         }
@@ -79,7 +79,7 @@ pub fn send_email(subject: &str, body: &str, config: &crate::config::Config, _de
 
     // Send the email
     log::debug!("Attempting to send email...");
-    match mailer.send(&email) {
+    match mailer.send(email).await {
         Ok(_) => {
             log::debug!("Email sent successfully!");
             Ok(format!("Email sent successfully to {} via {}", recipient, config.smtp_server))

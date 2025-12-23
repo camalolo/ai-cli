@@ -2,11 +2,11 @@ use colored::Color;
 use colored::Colorize;
 use anyhow::{anyhow, Result};
 
-pub fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, outputsize: Option<&str>) -> Result<String> {
+pub async fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, outputsize: Option<&str>) -> Result<String> {
     if api_key.is_empty() {
         return Err(anyhow!("ALPHA_VANTAGE_API_KEY not found in ~/.aicli.conf"));
     }
-    let client = crate::http::create_http_client();
+    let client = crate::http::create_async_http_client();
 
     let outputsize_param = outputsize.unwrap_or("compact");
     let url = if function == "GLOBAL_QUOTE" {
@@ -32,10 +32,12 @@ pub fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, outputsi
     let response = client
         .get(&url)
         .send()
+        .await
         .map_err(|e| anyhow!("Alpha Vantage API request failed: {}", e).context("HTTP request error"))?;
 
     let response_text = response
         .text()
+        .await
         .map_err(|e| anyhow!("Failed to parse Alpha Vantage response: {}", e).context("Response parsing error"))?;
 
     Ok(response_text)

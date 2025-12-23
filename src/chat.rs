@@ -4,7 +4,7 @@ use colored::{Color, Colorize};
 use serde_json::{json, Value};
 use crate::config::Config;
 use spinners::{Spinner, Spinners};
-use async_openai::types::{CreateChatCompletionRequest, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent, ChatCompletionTool, ChatCompletionToolType, FunctionObject};
+use async_openai::{Client, config::OpenAIConfig, types::{CreateChatCompletionRequest, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent, ChatCompletionTool, ChatCompletionToolType, FunctionObject}};
 
 
 
@@ -71,9 +71,7 @@ impl ChatManager {
         self.history.clear(); // Reset history, system_instruction persists
     }
 
-    pub fn send_message(&mut self, message: &str, skip_spinner: bool) -> Result<Value> {
-        let client = crate::http::create_http_client();
-
+    pub async fn send_message(&mut self, message: &str, skip_spinner: bool) -> Result<Value> {
         // Add user message to history in OpenAI format
         let user_message = json!({
             "role": "user",
@@ -235,8 +233,10 @@ impl ChatManager {
             ..Default::default()
         };
 
-        let body = serde_json::to_value(&request)
-            .map_err(|e| anyhow!("Failed to serialize request: {}", e))?;
+        let config = OpenAIConfig::new()
+            .with_api_key(self.config.api_key.clone())
+            .with_api_base(format!("{}/{}", self.config.api_base_url, self.config.api_version));
+        let client = Client::with_config(config);
 
         let spinner = if skip_spinner {
             None
@@ -244,40 +244,21 @@ impl ChatManager {
             Some(Spinner::new(Spinners::Dots, "".into()))
         };
 
-        // Build request with configurable endpoint and authentication
-        let endpoint = self.config.get_api_endpoint();
-        let mut request = client.post(&endpoint);
-
-        // Add authentication based on API type
-        if let Some(auth_header) = self.config.get_auth_header() {
-            request = request.header("Authorization", auth_header);
-        }
-
-        let response = request
-            .json(&body)
-            .send()
+        let response = client.chat().create(request).await
             .map_err(|e| anyhow!("API request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!("API request failed with status: {}", response.status()));
-        }
 
         if let Some(mut spinner) = spinner {
             spinner.stop();
             print!("\r\x1b[2K");
         }
 
-        let response_json: Value = response
-            .json()
-            .map_err(|e| anyhow!("Failed to parse response: {}", e))?;
+        let response_json: Value = serde_json::to_value(&response)
+            .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
 
         // Add assistant response to history in OpenAI format
-        if let Some(choices) = response_json.get("choices").and_then(|c| c.as_array()) {
-            for choice in choices {
-                if let Some(message) = choice.get("message") {
-                    self.history.push(message.clone());
-                }
-            }
+        for choice in &response.choices {
+            self.history.push(serde_json::to_value(&choice.message)
+                .map_err(|e| anyhow!("Failed to serialize message: {}", e))?);
         }
 
         Ok(response_json)
