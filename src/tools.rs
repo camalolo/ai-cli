@@ -44,9 +44,8 @@ pub async fn process_search_online(args: &Value, chat_manager: &Arc<Mutex<ChatMa
     let query = args.get("query").and_then(|q| q.as_str());
     if let Some(q) = query {
         let manager = chat_manager.lock().await;
-        let api_key = manager.get_google_search_api_key().to_string();
-        let engine_id = manager.get_google_search_engine_id().to_string();
-        let result = search_online(q, &api_key, &engine_id).await;
+        let api_key = manager.get_tavily_api_key().to_string();
+        let result = search_online(q, &api_key).await;
         (normalize_output(&format!("[Tool result] search_online: {}", result)), false)
     } else {
         (normalize_output("[Tool error] search_online: Missing 'query' parameter"), false)

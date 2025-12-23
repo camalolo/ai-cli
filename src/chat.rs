@@ -16,16 +16,12 @@ pub struct ChatManager {
 }
 
 impl ChatManager {
-    pub fn get_google_search_api_key(&self) -> &str {
-        &self.config.google_search_api_key
+    pub fn get_tavily_api_key(&self) -> &str {
+        &self.config.tavily_api_key
     }
 
     pub fn get_config(&self) -> &Config {
         &self.config
-    }
-
-    pub fn get_google_search_engine_id(&self) -> &str {
-        &self.config.google_search_engine_id
     }
 
 

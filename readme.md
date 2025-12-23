@@ -18,7 +18,7 @@ AI CLI is a Rust application that acts as a provider-agnostic AI assistant withi
 
 *   `src/main.rs`: Contains the main application logic, including the chat interface, tool execution, and API interaction.
 *   `src/config.rs`: Handles configuration loading and provider-specific settings.
-*   `src/search.rs`: Implements the online search functionality using the Google Custom Search API and web scraping capabilities.
+*   `src/search.rs`: Implements the online search functionality using the Tavily Search API.
 *   `src/command.rs`: Handles system command execution with sandboxing and security considerations.
 *   `src/email.rs`: Manages email sending functionality with SMTP support.
 *   `src/alpha_vantage.rs`: Provides integration with the Alpha Vantage API for financial data.
@@ -52,8 +52,7 @@ SENDER_EMAIL=
 ### Search APIs (Optional)
 
 ```
-GOOGLE_SEARCH_API_KEY=
-GOOGLE_SEARCH_ENGINE_ID=
+TAVILY_API_KEY=
 ALPHA_VANTAGE_API_KEY=
 ```
 
@@ -102,8 +101,7 @@ API_KEY=your_api_key_here
 *   `SMTP_PASSWORD`: Password for SMTP authentication (optional, required for non-localhost servers)
 *   `DESTINATION_EMAIL`: The email address to which the `send_email` function will send emails
 *   `SENDER_EMAIL`: The email address to use as the sender (optional, defaults to DESTINATION_EMAIL)
-*   `GOOGLE_SEARCH_API_KEY`: Your API key for the Google Custom Search API
-*   `GOOGLE_SEARCH_ENGINE_ID`: Your search engine ID for the Google Custom Search API
+*   `TAVILY_API_KEY`: Your API key for the Tavily Search API
 *   `ALPHA_VANTAGE_API_KEY`: Your API key for the Alpha Vantage API
 
 ## Usage

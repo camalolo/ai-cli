@@ -21,8 +21,7 @@ pub struct Config {
     pub sender_email: String,
 
     // Optional: Search APIs
-    pub google_search_api_key: String,
-    pub google_search_engine_id: String,
+    pub tavily_api_key: String,
     pub alpha_vantage_api_key: String,
 }
 
@@ -93,9 +92,8 @@ impl Default for Config {
             smtp_password: "".to_string(),
             destination_email: "".to_string(),
             sender_email: "".to_string(),
-            google_search_api_key: "".to_string(),
-            google_search_engine_id: "".to_string(),
-            alpha_vantage_api_key: "".to_string(),
+             tavily_api_key: "".to_string(),
+             alpha_vantage_api_key: "".to_string(),
         }
     }
 }
