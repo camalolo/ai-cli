@@ -15,7 +15,7 @@ pub fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str) -> Resul
 
     println!(
         "{} {}",
-        "Gemini is querying alpha vantage for:"
+        "ai-cli is querying alpha vantage for:"
             .color(Color::Cyan)
             .bold(),
         symbol

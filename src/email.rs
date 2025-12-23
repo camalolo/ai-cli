@@ -121,13 +121,12 @@ pub fn send_email(subject: &str, body: &str, smtp_server: &str, debug: bool) -> 
                 println!("No SMTP credentials found, trying without authentication...");
             }
             // Try without authentication for local/trusted servers
-            match SmtpTransport::builder_dangerous(smtp_server).port(25).timeout(Some(Duration::from_secs(30))).build() {
-                mailer => {
-                    if debug {
-                        println!("SMTP transport created without authentication");
-                    }
-                    mailer
+            let mailer = SmtpTransport::builder_dangerous(smtp_server).port(25).timeout(Some(Duration::from_secs(30))).build();
+            {
+                if debug {
+                    println!("SMTP transport created without authentication");
                 }
+                mailer
             }
         }
     };

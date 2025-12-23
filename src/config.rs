@@ -1,4 +1,3 @@
-use dirs;
 use std::env;
 use std::path::Path;
 
@@ -26,7 +25,7 @@ pub struct Config {
 impl Config {
     /// Load configuration from ~/.aicli.conf file
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let home_dir = dirs::home_dir()
+        let home_dir = ::dirs::home_dir()
             .expect("Could not determine home directory")
             .to_string_lossy()
             .to_string();
@@ -91,7 +90,7 @@ impl Config {
     /// Construct the API endpoint URL - always use OpenAI-compatible format
     pub fn get_api_endpoint(&self) -> String {
         // Always use OpenAI-compatible chat/completions endpoint
-        // Gemini also supports OpenAI-compatible endpoints
+        // Google Gemini also supports OpenAI-compatible endpoints
         format!("{}/{}/chat/completions", self.api_base_url, self.api_version)
     }
     

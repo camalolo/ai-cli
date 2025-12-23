@@ -7,7 +7,7 @@ AI CLI is a Rust application that acts as a provider-agnostic AI assistant withi
 ## Functionality
 
 *   **Chat Interface:** Provides a command-line interface for interacting with AI models.
-*   **Provider Agnostic:** Works with any OpenAI-compatible API (Gemini, OpenAI, local LLMs, etc.).
+*   **Provider Agnostic:** Works with any OpenAI-compatible API (Google Gemini, OpenAI, local LLMs, etc.).
 *   **Tool Execution:** Executes system commands using the `execute_command` function, allowing the AI to interact with the file system and other system utilities.
 *   **Online Search:** Performs online searches using the `search_online` function, enabling the AI to retrieve up-to-date information from the web.
 *   **Email Sending:** Sends emails using the `send_email` function, allowing the AI to send notifications or reports.
@@ -125,9 +125,9 @@ API_KEY=your_api_key_here
 
 4.  Chat with the AI by typing messages in the command-line interface. Use `!command` to run shell commands directly (e.g., `!ls` or `!dir`). Type `exit` to quit or `clear` to reset the conversation.
 
-## Migration from Gemini CLI-RS
+## Migration from Previous Version
 
-If you were using the previous version (gemini-cli-rs), you can migrate your configuration:
+If you were using the previous version, you can migrate your configuration:
 
 1. Rename your existing `.gemini.conf` to `.aicli.conf`:
    ```bash
