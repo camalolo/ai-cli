@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::scrape::scrape_url;
-use crate::similarity::{compute_tfidf, tf_vector, cosine_similarity, build_term_graph, graph_similarity, RELEVANCE_THRESHOLD};
+use crate::similarity::{cosine_similarity, RELEVANCE_THRESHOLD};
 
 pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
     if api_key.is_empty() || engine_id.is_empty() {
@@ -101,10 +101,6 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
                     return "No valid content to process.".to_string();
                 }
 
-                let tfidf = compute_tfidf(&documents);
-                let query_vector = tf_vector(query, &tfidf);
-                let query_graph = build_term_graph(query);
-
                 let scored_results: Vec<(f32, String, String, String)> = search_results
                     .into_iter()
                     .filter_map(|(title, link, content)| {
@@ -112,14 +108,8 @@ pub fn search_online(query: &str, api_key: &str, engine_id: &str) -> String {
                             return None;
                         }
 
-                        let doc_vector = tf_vector(&content, &tfidf);
-                        let tfidf_similarity = cosine_similarity(&query_vector, &doc_vector);
-
-                        let doc_graph = build_term_graph(&content);
-                        let graph_similarity = graph_similarity(&query_graph, &doc_graph);
-
-                        let combined_similarity = 0.7 * tfidf_similarity + 0.3 * graph_similarity;
-                        Some((combined_similarity, title, link, content))
+                        let similarity = cosine_similarity(query, &content);
+                        Some((similarity, title, link, content))
                     })
                     .collect();
 

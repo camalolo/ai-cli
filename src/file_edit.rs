@@ -1,9 +1,8 @@
 use regex::Regex;
 use std::fs;
 use std::path::PathBuf;
-use std::io::{self, Read};
-use std::os::fd::AsRawFd;
 use difference::{Changeset, Difference};
+use crossterm::{terminal, event::{self, KeyCode}};
 use crate::sandbox::get_sandbox_root;
 
 use crate::patch::apply_patch;
@@ -19,27 +18,19 @@ fn confirm_change(original: &str, new_content: &str, filename: &str, operation_d
         }
     }
     println!("Press Enter to apply, Escape to cancel");
-    let stdin_fd = io::stdin().as_raw_fd();
-    let mut orig_term: libc::termios = unsafe { std::mem::zeroed() };
-    unsafe { libc::tcgetattr(stdin_fd, &mut orig_term) };
-    let mut raw_term = orig_term;
-    unsafe { libc::cfmakeraw(&mut raw_term) };
-    unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &raw_term) };
+    terminal::enable_raw_mode().map_err(|e| e.to_string())?;
     let confirmed = loop {
-        let mut buf = [0u8; 1];
-        if io::stdin().read_exact(&mut buf).is_ok() {
-            let c = buf[0];
-            if c == b'\r' { // Enter
-                break true;
-            } else if c == 0x1b || c == 0x03 { // Escape or ^C
-                break false;
-            }
-        } else {
-            break false;
+        match event::read() {
+            Ok(event::Event::Key(key_event)) => match key_event.code {
+                KeyCode::Enter => break Ok(true),
+                KeyCode::Esc => break Ok(false),
+                _ => {}
+            },
+            _ => break Err("Failed to read input".to_string()),
         }
     };
-    unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &orig_term) };
-    Ok(confirmed)
+    terminal::disable_raw_mode().ok();
+    confirmed
 }
 
 pub fn file_editor(
