@@ -15,7 +15,7 @@ use termimad::crossterm::style::Attribute;
 use crate::chat::ChatManager;
 use anyhow::Result;
 
-pub fn process_execute_command(args: &Value, _debug: bool, allow_commands: bool) -> (String, bool) {
+pub fn process_execute_command(args: &Value, debug: bool, allow_commands: bool) -> (String, bool) {
     let command = args.get("command").and_then(|c| c.as_str());
     if let Some(cmd) = command {
         let confirmed = if allow_commands {
@@ -29,7 +29,7 @@ pub fn process_execute_command(args: &Value, _debug: bool, allow_commands: bool)
         };
         if confirmed {
             println!("Executing command: {}", cmd.color(Color::Magenta));
-            let result = execute_command(cmd).unwrap_or_else(|e| e.to_string());
+            let result = execute_command(cmd, debug).unwrap_or_else(|e| e.to_string());
             println!();
             (normalize_output(&format!("[Tool result] execute_command: {}", result)), false)
         } else {
@@ -201,8 +201,9 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                 }
                 "scrape_url" => {
                     let url = args.get("url").and_then(|u| u.as_str());
+                    let mode = args.get("mode").and_then(|m| m.as_str()).unwrap_or("summarized");
                      if let Some(u) = url {
-                         match crate::scrape::scrape_url(u) {
+                          match crate::scrape::scrape_url(u, mode, debug).await {
                              Ok(result) => results.push(tool_result("scrape_url", &result)),
                              Err(e) => results.push(tool_error("scrape_url", &e.to_string())),
                          }
@@ -223,7 +224,7 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                       let outputsize = args.get("outputsize").and_then(|s| s.as_str());
                         if let (Some(func), Some(sym)) = (function, symbol) {
                             let api_key = chat_manager.lock().await.get_alpha_vantage_api_key().to_string();
-                            match alpha_vantage_query(func, sym, &api_key, outputsize).await {
+                             match alpha_vantage_query(func, sym, &api_key, outputsize, debug).await {
                               Ok(result) => results.push(tool_result("alpha_vantage_query", &result)),
                               Err(e) => results.push(tool_error("alpha_vantage_query", &e.to_string())),
                           }
@@ -241,7 +242,7 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
 
                     if let (Some(subcmd), Some(fname)) = (subcommand, filename_opt) {
                         let skip_confirmation = matches!(subcmd, "read" | "search"); // Only skip for non-destructive ops
-                         let (result, rejected) = file_editor(subcmd, fname, data, replacement, skip_confirmation);
+                         let (result, rejected) = file_editor(subcmd, fname, data, replacement, skip_confirmation, debug);
                          results.push(tool_result("file_editor", &result));
                          if rejected { rejection_occurred = true; }
                      } else {

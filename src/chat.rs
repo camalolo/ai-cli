@@ -63,145 +63,115 @@ impl ChatManager {
         self.history.clear(); // Reset history, system_instruction persists
     }
 
+    fn create_tool(name: &str, description: &str, parameters: serde_json::Value) -> ChatCompletionTool {
+        ChatCompletionTool {
+            r#type: ChatCompletionToolType::Function,
+            function: FunctionObject {
+                name: name.to_string(),
+                description: Some(description.to_string()),
+                parameters: Some(parameters),
+                strict: Some(false),
+            },
+        }
+    }
+
     fn build_tools() -> Vec<ChatCompletionTool> {
         vec![
 
-            ChatCompletionTool {
-                r#type: ChatCompletionToolType::Function,
-                function: FunctionObject {
-                    name: "search_online".to_string(),
-                    description: Some("Search the web for a query and return a synthesized answer. Use for factual lookups, current events, or research. Defaults to concise summaries for speed.".to_string()),
-                    parameters: Some(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "The search query"
-                            },
-                             "include_results": {
-                                "type": "boolean",
-                                "description": "Whether to include a list of search results (default: false). Set to true only if you need to review sources directly, e.g., for verification or multiple options.",
-                                "default": false
-                            },
-                            "answer_mode": {
-                                "type": "string",
-                                "enum": ["basic", "full"],
-                                "description": "Answer detail level. 'basic' (default): Quick summary in 3 sentences, ideal for straightforward queries. 'full': Comprehensive answer with all available details, best for in-depth research or ambiguous topics.",
-                                "default": "basic"
-                            }
-                        },
-                        "required": ["query"]
-                    })),
-                    strict: Some(false),
+            Self::create_tool("search_online", "Search the web for a query and return a synthesized answer. Use for factual lookups, current events, or research. Defaults to concise summaries for speed.", json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query"
+                    },
+                     "include_results": {
+                        "type": "boolean",
+                        "description": "Whether to include a list of search results (default: false). Set to true only if you need to review sources directly, e.g., for verification or multiple options.",
+                        "default": false
+                    },
+                    "answer_mode": {
+                        "type": "string",
+                        "enum": ["basic", "full"],
+                        "description": "Answer detail level. 'basic' (default): Quick summary in 3 sentences, ideal for straightforward queries. 'full': Comprehensive answer with all available details, best for in-depth research or ambiguous topics.",
+                        "default": "basic"
+                    }
                 },
-            },
-            ChatCompletionTool {
-                r#type: ChatCompletionToolType::Function,
-                function: FunctionObject {
-                    name: "execute_command".to_string(),
-                    description: Some("Execute a system command. Use this for any shell task.".to_string()),
-                    parameters: Some(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "command": {"type": "string"}
-                        },
-                        "required": ["command"]
-                    })),
-                    strict: Some(false),
+                "required": ["query"]
+            })),
+            Self::create_tool("execute_command", "Execute a system command. Use this for any shell task.", json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"}
                 },
-            },
-            ChatCompletionTool {
-                r#type: ChatCompletionToolType::Function,
-                function: FunctionObject {
-                    name: "send_email".to_string(),
-                    description: Some("Sends an email to a fixed address using SMTP.".to_string()),
-                    parameters: Some(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "subject": {"type": "string", "description": "Email subject line"},
-                            "body": {"type": "string", "description": "Email message body"}
-                        },
-                        "required": ["subject", "body"]
-                    })),
-                    strict: Some(false),
+                "required": ["command"]
+            })),
+            Self::create_tool("send_email", "Sends an email to a fixed address using SMTP.", json!({
+                "type": "object",
+                "properties": {
+                    "subject": {"type": "string", "description": "Email subject line"},
+                    "body": {"type": "string", "description": "Email message body"}
                 },
-            },
-            ChatCompletionTool {
-                r#type: ChatCompletionToolType::Function,
-                function: FunctionObject {
-                    name: "alpha_vantage_query".to_string(),
-                    description: Some("Query the Alpha Vantage API for stock/financial data".to_string()),
-                     parameters: Some(serde_json::json!({
-                         "type": "object",
-                         "properties": {
-                             "function": {
-                                 "type": "string",
-                                 "description": "The Alpha Vantage function (e.g., TIME_SERIES_DAILY)"
-                             },
-                             "symbol": {
-                                 "type": "string",
-                                 "description": "The stock symbol (e.g., IBM)"
-                             },
-                             "outputsize": {
-                                 "type": "string",
-                                 "enum": ["compact", "full"],
-                                 "description": "The size of the output data. 'compact' returns the last 100 data points, 'full' returns all available data. Defaults to 'compact'."
-                             }
-                         },
-                         "required": ["function", "symbol"]
-                    })),
-                    strict: Some(false),
+                "required": ["subject", "body"]
+            })),
+            Self::create_tool("alpha_vantage_query", "Query the Alpha Vantage API for stock/financial data", json!({
+                "type": "object",
+                "properties": {
+                    "function": {
+                        "type": "string",
+                        "description": "The Alpha Vantage function (e.g., TIME_SERIES_DAILY)"
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "description": "The stock symbol (e.g., IBM)"
+                    },
+                    "outputsize": {
+                        "type": "string",
+                        "enum": ["compact", "full"],
+                        "description": "The size of the output data. 'compact' returns the last 100 data points, 'full' returns all available data. Defaults to 'compact'."
+                    }
                 },
-            },
-            ChatCompletionTool {
-                r#type: ChatCompletionToolType::Function,
-                function: FunctionObject {
-                    name: "scrape_url".to_string(),
-                    description: Some("Scrapes the content of a single URL".to_string()),
-                    parameters: Some(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "url": {
-                                "type": "string",
-                                "description": "The URL to scrape"
-                            }
-                        },
-                        "required": ["url"]
-                    })),
-                    strict: Some(false),
+                "required": ["function", "symbol"]
+            })),
+            Self::create_tool("scrape_url", "Scrapes the content of a single URL", json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to scrape"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["summarized", "full"],
+                        "default": "summarized",
+                        "description": "Mode: 'summarized' provides a concise summary (default), 'full' returns complete extracted text"
+                    }
                 },
-            },
-            ChatCompletionTool {
-                r#type: ChatCompletionToolType::Function,
-                function: FunctionObject {
-                    name: "file_editor".to_string(),
-                    description: Some("Edit files in the sandbox with sub-commands: read, write, search, search_and_replace, apply_diff.".to_string()),
-                    parameters: Some(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "subcommand": {
-                                "type": "string",
-                                "description": "The sub-command to execute: read, write, search, search_and_replace, apply_diff",
-                                "enum": ["read", "write", "search", "search_and_replace", "apply_diff"]
-                            },
-                            "filename": {
-                                "type": "string",
-                                "description": "The name of the file in the sandbox to operate on"
-                            },
-                            "data": {
-                                "type": "string",
-                                "description": "Content to write (for write), regex pattern (for search/search_and_replace), or diff content (for apply_diff)"
-                            },
-                            "replacement": {
-                                "type": "string",
-                                "description": "Replacement text for search_and_replace"
-                            }
-                        },
-                        "required": ["subcommand", "filename"]
-                    })),
-                    strict: Some(false),
+                "required": ["url"]
+            })),
+            Self::create_tool("file_editor", "Edit files in the sandbox with sub-commands: read, write, search, search_and_replace, apply_diff.", json!({
+                "type": "object",
+                "properties": {
+                    "subcommand": {
+                        "type": "string",
+                        "description": "The sub-command to execute: read, write, search, search_and_replace, apply_diff",
+                        "enum": ["read", "write", "search", "search_and_replace", "apply_diff"]
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "The name of the file in the sandbox to operate on"
+                    },
+                    "data": {
+                        "type": "string",
+                        "description": "Content to write (for write), regex pattern (for search/search_and_replace), or diff content (for apply_diff)"
+                    },
+                    "replacement": {
+                        "type": "string",
+                        "description": "Replacement text for search_and_replace"
+                    }
                 },
-            },
+                "required": ["subcommand", "filename"]
+            })),
         ]
     }
 

@@ -159,16 +159,23 @@ pub fn file_editor(
     data: Option<&str>,
     replacement: Option<&str>,
     skip_confirmation: bool,
+    debug: bool,
 ) -> (String, bool) {
     let file_path = PathBuf::from(get_sandbox_root()).join(filename);
 
-    match subcommand {
+    crate::log_to_file(debug, &format!("File editor: subcommand={}, filename={}", subcommand, filename));
+
+    let (result, rejected) = match subcommand {
         "read" => handle_read(&file_path, filename),
         "write" => handle_write(&file_path, filename, data, skip_confirmation),
         "search" => handle_search(&file_path, filename, data),
         "search_and_replace" => handle_search_and_replace(&file_path, filename, data, replacement, skip_confirmation),
         "apply_diff" => handle_apply_diff(&file_path, filename, data, skip_confirmation),
         _ => (format!("Error: Unknown subcommand '{}'", subcommand), false),
-    }
+    };
+
+    crate::log_to_file(debug, &format!("File editor result: {}", result));
+
+    (result, rejected)
 }
 

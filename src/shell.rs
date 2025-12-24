@@ -83,7 +83,7 @@ fn detect_unix_shell() -> String {
     }
 }
 
-pub fn interactive_shell(_debug: bool) -> String {
+pub fn interactive_shell(debug: bool) -> String {
     println!("{}", "Entering interactive shell mode. Type 'exit' to return.".color(Color::Cyan));
     let mut accumulated_output = String::new();
     let mut rl = DefaultEditor::new().expect("Failed to create editor");
@@ -96,7 +96,7 @@ pub fn interactive_shell(_debug: bool) -> String {
                     break;
                 }
                 rl.add_history_entry(input).ok();
-                let output = execute_command(input).unwrap_or_else(|e| e.to_string());
+                let output = execute_command(input, debug).unwrap_or_else(|e| e.to_string());
                 println!("{}", output.color(Color::Magenta));
                 accumulated_output.push_str(&format!("Command: {}\nOutput: {}\n\n", input, output));
             }

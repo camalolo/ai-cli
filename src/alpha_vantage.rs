@@ -2,7 +2,7 @@ use colored::Color;
 use colored::Colorize;
 use anyhow::{anyhow, Result};
 
-pub async fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, outputsize: Option<&str>) -> Result<String> {
+pub async fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, outputsize: Option<&str>, debug: bool) -> Result<String> {
     if api_key.is_empty() {
         return Err(anyhow!("ALPHA_VANTAGE_API_KEY not found in ~/.aicli.conf"));
     }
@@ -29,6 +29,8 @@ pub async fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, ou
         symbol
     );
 
+    crate::log_to_file(debug, &format!("Alpha Vantage Query: function={}, symbol={}, outputsize={}", function, symbol, outputsize_param));
+
     let response = client
         .get(&url)
         .send()
@@ -39,6 +41,8 @@ pub async fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, ou
         .text()
         .await
         .map_err(|e| anyhow!("Failed to parse Alpha Vantage response: {}", e).context("Response parsing error"))?;
+
+    crate::log_to_file(debug, &format!("Alpha Vantage Response: {}", response_text));
 
     Ok(response_text)
 }

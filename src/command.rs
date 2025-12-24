@@ -2,13 +2,15 @@ use anyhow::Result;
 
 use crate::sandbox::get_sandbox_root;
 
-pub fn execute_command(command: &str) -> Result<String> {
+pub fn execute_command(command: &str, debug: bool) -> Result<String> {
     if command.trim().is_empty() {
         return Ok("Error: No command provided".to_string());
     }
 
     let parsed: Vec<String> = shell_words::split(command)
         .map_err(|e| anyhow::anyhow!("Failed to parse command: {}", e))?;
+
+    crate::log_to_file(debug, &format!("Executing command: {}", command));
 
     let output = std::process::Command::new(&parsed[0])
         .args(&parsed[1..])
@@ -18,15 +20,18 @@ pub fn execute_command(command: &str) -> Result<String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if output.status.success() {
+    let result = if output.status.success() {
         if stdout.is_empty() && stderr.is_empty() {
-            Ok("Command executed (no output)".to_string())
+            "Command executed (no output)".to_string()
         } else {
-            Ok(format!("{}{}", stdout, stderr))
+            format!("{}{}", stdout, stderr)
         }
     } else {
-        Ok(format!("Command '{}' exited with non-zero status", command))
-    }
+        format!("Command '{}' exited with non-zero status", command)
+    };
+
+    crate::log_to_file(debug, &format!("Command result: {}", result));
+
+    Ok(result)
 }
 

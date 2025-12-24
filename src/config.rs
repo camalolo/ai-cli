@@ -56,12 +56,13 @@ impl Config {
         format!("{}/{}/chat/completions", self.api_base_url, self.api_version)
     }
 
-
 }
+
+const EMPTY_MSG: &str = "<not set>";
 
 pub fn mask_or_display(value: &str) -> String {
     if value.is_empty() {
-        "<not set>".to_string()
+        EMPTY_MSG.to_string()
     } else {
         value.to_string()
     }
@@ -69,7 +70,7 @@ pub fn mask_or_display(value: &str) -> String {
 
 pub fn mask_password(password: &str) -> String {
     if password.is_empty() {
-        "<not set>".to_string()
+        EMPTY_MSG.to_string()
     } else {
         "***masked***".to_string()
     }

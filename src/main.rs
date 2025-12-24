@@ -85,11 +85,12 @@ async fn handle_user_input(
     args: &Args,
 ) -> Result<bool> {
     // Add to history (skip empty lines and special commands)
-    if !user_input.is_empty() && !user_input.to_lowercase().starts_with("exit") && !user_input.to_lowercase().starts_with("clear") {
+    let input_lower = user_input.to_lowercase();
+    if !user_input.is_empty() && !input_lower.starts_with("exit") && !input_lower.starts_with("clear") {
         rl.add_history_entry(user_input).ok();
     }
 
-    match user_input.to_lowercase().as_str() {
+    match input_lower.as_str() {
         "exit" => {
             println!("{}", "Goodbye!".color(Color::Cyan).bold());
             return Ok(false);
@@ -123,7 +124,7 @@ async fn handle_user_input(
                  Err(e) => print_error(&format!("Error: {}", e)),
              }
          } else {
-            let output = execute_command(command).unwrap_or_else(|e| e.to_string());
+            let output = execute_command(command, args.debug).unwrap_or_else(|e| e.to_string());
             let llm_input = format!("User ran command '!{}' with output: {}", command, output);
             println!("{}", output);
             match chat_manager.lock().await.send_message(&llm_input, false, args.debug).await {
@@ -239,16 +240,12 @@ async fn run_interactive_loop(chat_manager: Arc<Mutex<ChatManager>>, args: &Args
                 .sum()
         };
 
-        let prompt = {
-            #[cfg(target_os = "windows")]
-            {
-                // On Windows, avoid colored prompts due to compatibility issues
-                format!("[{}] > ", conv_length)
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                format!("[{}] > ", conv_length).color(Color::Green).bold().to_string()
-            }
+        let base_prompt = format!("[{}] > ", conv_length);
+        let prompt = if cfg!(target_os = "windows") {
+            // On Windows, avoid colored prompts due to compatibility issues
+            base_prompt
+        } else {
+            base_prompt.color(Color::Green).bold().to_string()
         };
 
         let readline = rl.readline(&prompt);
@@ -312,10 +309,6 @@ async fn main() -> Result<(), anyhow::Error> {
     let config = load_and_display_config(args.debug).await?;
 
     let chat_manager = Arc::new(Mutex::new(ChatManager::new(config)));
-    ctrlc::set_handler(|| {
-        std::process::exit(0);
-    })
-    .expect("Error setting Ctrl-C handler");
 
     if args.prompt.is_some() {
         handle_single_prompt_mode(chat_manager.clone(), &args).await?;
