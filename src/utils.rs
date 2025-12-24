@@ -29,6 +29,14 @@ pub fn log_to_file(debug: bool, msg: &str) {
     }
 }
 
+pub fn clear_debug_file(debug: bool) {
+    if debug {
+        if let Err(e) = std::fs::File::create("debug.log") {
+            eprintln!("Warning: Failed to clear debug.log: {}", e);
+        }
+    }
+}
+
 pub fn get_opt_str(args: &Value, key: &str, default: &str) -> String {
     args.get(key).and_then(|v| v.as_str()).unwrap_or(default).to_string()
 }

@@ -28,7 +28,7 @@ mod utils;
 
 use crate::chat::ChatManager;
 use crate::tools::{display_response, process_tool_calls};
-use crate::utils::{log_to_file, print_error};
+use crate::utils::{log_to_file, print_error, clear_debug_file};
 use crate::shell::interactive_shell;
 use crate::command::execute_command;
 use sandbox::get_sandbox_root;
@@ -274,6 +274,8 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let args = Args::parse();
+
+    clear_debug_file(args.debug);
 
     let config = load_and_display_config(args.debug).await?;
 

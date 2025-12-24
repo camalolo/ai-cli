@@ -49,6 +49,14 @@ async fn perform_search(query: &str, api_key: &str, include_answer: bool, includ
                         answer
                     };
                     output_parts.push(final_answer);
+                } else if !response.results.is_empty() {
+                    let combined_content: String = response.results.iter()
+                        .map(|r| r.content.as_str())
+                        .collect::<Vec<&str>>()
+                        .join("\n\n");
+                    crate::utils::log_to_file(debug, &format!("Synthesizing answer from {} search results", response.results.len()));
+                    let synthesized_answer = crate::tools::summarize_text(&combined_content, 3);
+                    output_parts.push(synthesized_answer);
                 } else {
                     output_parts.push("No answer generated.".to_string());
                 }
