@@ -4,7 +4,7 @@ use config::{Config as ConfigLoader, Environment, File, FileFormat};
 use std::env;
 
 /// Configuration structure holding all settings for the AI CLI
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
     // AI Provider Configuration

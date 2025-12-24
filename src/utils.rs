@@ -1,0 +1,46 @@
+use colored::{Color, Colorize};
+use serde_json::Value;
+use std::fs::OpenOptions;
+use std::io::Write;
+use chrono::Utc;
+
+pub fn print_error(message: &str) {
+    println!("{}", message.color(Color::Red));
+}
+
+pub fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() > max_len {
+        format!("{}...", &s[..max_len])
+    } else {
+        s.to_string()
+    }
+}
+
+pub fn log_to_file(debug: bool, msg: &str) {
+    if debug {
+        let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S");
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("debug.log")
+        {
+            let _ = writeln!(file, "[{}] {}", timestamp, msg);
+        }
+    }
+}
+
+pub fn get_opt_str(args: &Value, key: &str, default: &str) -> String {
+    args.get(key).and_then(|v| v.as_str()).unwrap_or(default).to_string()
+}
+
+pub fn get_opt_bool(args: &Value, key: &str, default: bool) -> bool {
+    args.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+}
+
+pub fn confirm(prompt: &str) -> bool {
+    dialoguer::Confirm::new()
+        .with_prompt(prompt)
+        .default(false)
+        .interact()
+        .unwrap_or(false)
+}

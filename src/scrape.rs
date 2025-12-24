@@ -8,7 +8,7 @@ use readability::extractor;
 pub async fn scrape_url(url: &str, mode: &str, debug: bool) -> Result<String> {
     println!("{} {}", "ai-cli is reading:".color(Color::Cyan).bold(), url);
 
-    crate::log_to_file(debug, &format!("Scraping URL: {}", url));
+    crate::utils::log_to_file(debug, &format!("Scraping URL: {}", url));
 
     // Create a client with timeout
     let client = crate::http::create_async_http_client();
@@ -53,7 +53,7 @@ pub async fn scrape_url(url: &str, mode: &str, debug: bool) -> Result<String> {
     let final_result = if mode == "full" || result.len() <= 1024 {
         result
     } else {
-        crate::log_to_file(debug, &format!("Summarizing content from {} chars", result.len()));
+        crate::utils::log_to_file(debug, &format!("Summarizing content from {} chars", result.len()));
         let summary = crate::tools::summarize_text(&result, 3);
         if summary.is_empty() {
             result // fallback to full content if summarization fails
@@ -62,7 +62,7 @@ pub async fn scrape_url(url: &str, mode: &str, debug: bool) -> Result<String> {
         }
     };
 
-    crate::log_to_file(debug, &format!("Final scrape result: {}", final_result));
+    crate::utils::log_to_file(debug, &format!("Final scrape result: {}", final_result));
 
     Ok(final_result)
 }

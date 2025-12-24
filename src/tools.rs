@@ -13,6 +13,7 @@ use crate::email::send_email;
 use crate::alpha_vantage::alpha_vantage_query;
 use crate::file_edit::file_editor;
 use crate::chat::ChatManager;
+use crate::utils::{confirm, get_opt_bool, get_opt_str};
 use anyhow::{anyhow, Result};
 
 pub fn process_execute_command(args: &Value, debug: bool, allow_commands: bool) -> (String, bool) {
@@ -21,22 +22,18 @@ pub fn process_execute_command(args: &Value, debug: bool, allow_commands: bool) 
         let confirmed = if allow_commands {
             true
         } else {
-            dialoguer::Confirm::new()
-                .with_prompt(format!("LLM wants to execute command: {} | Confirm?", cmd))
-                .default(false)
-                .interact()
-                .unwrap_or(false)
+            confirm(&format!("LLM wants to execute command: {} | Confirm?", cmd))
         };
         if confirmed {
             println!("Executing command: {}", cmd.color(Color::Magenta));
             let result = execute_command(cmd, debug).unwrap_or_else(|e| e.to_string());
             println!();
-            (normalize_output(&format!("[Tool result] execute_command: {}", result)), false)
+            (tool_result("execute_command", &result), false)
         } else {
-            (normalize_output("[Tool result] execute_command: User rejected the command execution."), true)
+            (tool_result("execute_command", "User rejected the command execution."), true)
         }
     } else {
-        (normalize_output("[Tool error] execute_command: Missing 'command' parameter"), false)
+        (tool_error("execute_command", "Missing 'command' parameter"), false)
     }
 }
 
@@ -44,15 +41,15 @@ pub fn process_execute_command(args: &Value, debug: bool, allow_commands: bool) 
 
 pub async fn process_search_online(args: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool) -> (String, bool) {
     let query = args.get("query").and_then(|q| q.as_str());
-    let include_results = args.get("include_results").and_then(|ir| ir.as_bool()).unwrap_or(false);
-    let answer_mode = args.get("answer_mode").and_then(|am| am.as_str()).unwrap_or("basic");
+    let include_results = get_opt_bool(args, "include_results", false);
+    let answer_mode = get_opt_str(args, "answer_mode", "basic");
     if let Some(q) = query {
         let manager = chat_manager.lock().await;
         let api_key = manager.get_tavily_api_key().to_string();
-        let result = search_online(q, &api_key, include_results, answer_mode, debug).await;
-        (normalize_output(&format!("[Tool result] search_online: {}", result)), false)
+        let result = search_online(q, &api_key, include_results, &answer_mode, debug).await;
+        (tool_result("search_online", &result), false)
     } else {
-        (normalize_output("[Tool error] search_online: Missing 'query' parameter"), false)
+        (tool_error("search_online", "Missing 'query' parameter"), false)
     }
 }
 
@@ -64,11 +61,11 @@ pub async fn process_send_email(args: &Value, chat_manager: &Arc<Mutex<ChatManag
         let manager = chat_manager.lock().await;
         let config = manager.get_config();
         match send_email(subj, bod, config, debug).await {
-            Ok(msg) => (normalize_output(&format!("[Tool result] send_email: {}", msg)), false),
-            Err(e) => (normalize_output(&format!("[Tool error] send_email: {}", e)), false),
+            Ok(msg) => (tool_result("send_email", &msg), false),
+            Err(e) => (tool_error("send_email", &e.to_string()), false),
         }
     } else {
-        (normalize_output("[Tool error] send_email: Missing required parameters"), false)
+        (tool_error("send_email", "Missing required parameters"), false)
     }
 }
 
@@ -113,7 +110,7 @@ pub fn summarize_text(text: &str, num_sentences: usize) -> String {
 }
 
 /// Displays normalized LLM output with Markdown rendering
-pub fn display_llm_output(content: &str, _color: Color) {
+pub fn display_llm_output(content: &str) {
     let mut skin = MadSkin::default();
     skin.paragraph.set_fg(TermColor::AnsiValue(222)); // Light orange from Ubuntu palette
     // Configure styles for headers using Ubuntu-inspired colors
@@ -143,7 +140,7 @@ pub fn display_response(response: &Value) {
         for choice in choices {
             if let Some(message) = choice.get("message") {
                 if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
-                    display_llm_output(content, Color::Yellow);
+                    display_llm_output(content);
                 }
             }
         }
@@ -194,7 +191,7 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
     loop {
         let tool_calls = extract_tool_calls(&current_response);
         if debug && !tool_calls.is_empty() {
-            crate::log_to_file(debug, &format!("Tool calls found: {:?}", tool_calls));
+            crate::utils::log_to_file(debug, &format!("Tool calls found: {:?}", tool_calls));
         }
 
         if tool_calls.is_empty() {
@@ -219,13 +216,13 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                  "scrape_url" => {
                      let result = handle_async_tool_result(async {
                          let url = args.get("url").and_then(|u| u.as_str()).ok_or_else(|| anyhow!("Missing 'url' parameter"))?;
-                         let mode = args.get("mode").and_then(|m| m.as_str()).unwrap_or("summarized");
-                         crate::scrape::scrape_url(url, mode, debug).await
+                         let mode = get_opt_str(&args, "mode", "summarized");
+                         crate::scrape::scrape_url(url, &mode, debug).await
                      }, "scrape_url").await;
                      results.push(result.0);
                  }
                 "send_email" => {
-                    let subject = args.get("subject").and_then(|s| s.as_str()).unwrap_or("unknown");
+                    let subject = get_opt_str(&args, "subject", "unknown");
                     println!("ai-cli is sending email: {}", subject.color(Color::Cyan).bold());
                     let (result, rejected) = process_send_email(&args, chat_manager, debug).await;
                     results.push(result);

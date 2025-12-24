@@ -24,43 +24,16 @@ mod alpha_vantage;
 mod file_edit;
 mod sandbox;
 mod http;
+mod utils;
 
 use crate::chat::ChatManager;
 use crate::tools::{display_response, process_tool_calls};
+use crate::utils::{log_to_file, print_error};
 use crate::shell::interactive_shell;
 use crate::command::execute_command;
 use sandbox::get_sandbox_root;
 
 const COMPILE_TIME: &str = build_time_local!("%Y-%m-%d %H:%M:%S");
-
-fn print_error(message: &str) {
-    println!("{}", message.color(Color::Red));
-}
-
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() > max_len {
-        format!("{}...", &s[..max_len])
-    } else {
-        s.to_string()
-    }
-}
-
-fn log_to_file(debug: bool, msg: &str) {
-    if debug {
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        use chrono::Utc;
-
-        let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S");
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("debug.log")
-        {
-            let _ = writeln!(file, "[{}] {}", timestamp, msg);
-        }
-    }
-}
 
 async fn handle_llm_response(
     response: &serde_json::Value,

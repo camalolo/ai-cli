@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use difference::{Changeset, Difference};
 
 use crate::sandbox::get_sandbox_root;
+use crate::utils::confirm;
 use anyhow::Result;
 
 use crate::patch::apply_patch;
@@ -20,12 +21,7 @@ fn confirm_change(original: &str, new_content: &str, filename: &str, operation_d
             Difference::Add(ref s) => println!("\x1b[92m+{}\x1b[0m", s),
         }
     }
-    let confirmed = dialoguer::Confirm::new()
-        .with_prompt("Apply changes?")
-        .default(false)
-        .interact()
-        .unwrap_or(false);
-    Ok(confirmed)
+    Ok(confirm("Apply changes?"))
 }
 
 fn confirm_and_apply_change(old_content: &str, new_content: &str, filename: &str, operation_desc: &str, skip_confirmation: bool) -> Result<(), String> {
@@ -163,7 +159,7 @@ pub fn file_editor(
 ) -> (String, bool) {
     let file_path = PathBuf::from(get_sandbox_root()).join(filename);
 
-    crate::log_to_file(debug, &format!("File editor: subcommand={}, filename={}", subcommand, filename));
+    crate::utils::log_to_file(debug, &format!("File editor: subcommand={}, filename={}", subcommand, filename));
 
     let (result, rejected) = match subcommand {
         "read" => handle_read(&file_path, filename),
@@ -174,7 +170,7 @@ pub fn file_editor(
         _ => (format!("Error: Unknown subcommand '{}'", subcommand), false),
     };
 
-    crate::log_to_file(debug, &format!("File editor result: {}", result));
+    crate::utils::log_to_file(debug, &format!("File editor result: {}", result));
 
     (result, rejected)
 }

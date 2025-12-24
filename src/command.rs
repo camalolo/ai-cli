@@ -10,7 +10,7 @@ pub fn execute_command(command: &str, debug: bool) -> Result<String> {
     let parsed: Vec<String> = shell_words::split(command)
         .map_err(|e| anyhow::anyhow!("Failed to parse command: {}", e))?;
 
-    crate::log_to_file(debug, &format!("Executing command: {}", command));
+    crate::utils::log_to_file(debug, &format!("Executing command: {}", command));
 
     let output = std::process::Command::new(&parsed[0])
         .args(&parsed[1..])
@@ -30,7 +30,7 @@ pub fn execute_command(command: &str, debug: bool) -> Result<String> {
         format!("Command '{}' exited with non-zero status", command)
     };
 
-    crate::log_to_file(debug, &format!("Command result: {}", result));
+    crate::utils::log_to_file(debug, &format!("Command result: {}", result));
 
     Ok(result)
 }

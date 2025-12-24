@@ -27,23 +27,23 @@ fn create_smtp_transport(config: &crate::config::Config) -> Result<AsyncSmtpTran
 }
 
 pub async fn send_email(subject: &str, body: &str, config: &crate::config::Config, debug: bool) -> Result<String> {
-    crate::log_to_file(debug, "=== Email Debug Info ===");
-    crate::log_to_file(debug, &format!("SMTP Server: {}", config.smtp_server));
-    crate::log_to_file(debug, &format!("Subject: {}", subject));
-    crate::log_to_file(debug, &format!("Body: {}", body));
+    crate::utils::log_to_file(debug, "=== Email Debug Info ===");
+    crate::utils::log_to_file(debug, &format!("SMTP Server: {}", config.smtp_server));
+    crate::utils::log_to_file(debug, &format!("Subject: {}", subject));
+    crate::utils::log_to_file(debug, &format!("Body: {}", body));
 
     let recipient = config.destination_email.clone();
     if recipient.is_empty() {
         return Err(anyhow!("DESTINATION_EMAIL not set in config. Please set it to the recipient's email address."));
     }
-    crate::log_to_file(debug, &format!("Recipient: {}", recipient));
+    crate::utils::log_to_file(debug, &format!("Recipient: {}", recipient));
 
     let sender = if config.sender_email.is_empty() {
         recipient.clone()
     } else {
         config.sender_email.clone()
     };
-    crate::log_to_file(debug, &format!("Sender: {}", sender));
+    crate::utils::log_to_file(debug, &format!("Sender: {}", sender));
 
     // Build the email message
     let email = Message::builder()
@@ -58,14 +58,14 @@ pub async fn send_email(subject: &str, body: &str, config: &crate::config::Confi
     let mailer = create_smtp_transport(config)?;
 
     // Send the email
-    crate::log_to_file(debug, "Attempting to send email...");
+    crate::utils::log_to_file(debug, "Attempting to send email...");
     match mailer.send(email).await {
         Ok(_) => {
-            crate::log_to_file(debug, "Email sent successfully!");
+            crate::utils::log_to_file(debug, "Email sent successfully!");
             Ok(format!("Email sent successfully to {} via {}", recipient, config.smtp_server))
         },
         Err(e) => {
-            crate::log_to_file(debug, &format!("Email send failed with error: {}", e));
+            crate::utils::log_to_file(debug, &format!("Email send failed with error: {}", e));
             Err(anyhow!("Failed to send email: {}", e))
         }
     }

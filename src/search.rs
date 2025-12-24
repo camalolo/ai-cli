@@ -7,7 +7,7 @@ async fn perform_search(query: &str, api_key: &str, include_answer: bool, includ
         return Err("Tavily Search API is not configured. Please set TAVILY_API_KEY in ~/.aicli.conf".to_string());
     }
 
-    crate::log_to_file(debug, &format!("Tavily Query: {}", crate::truncate_str(query, 200)));
+    crate::utils::log_to_file(debug, &format!("Tavily Query: {}", crate::utils::truncate_str(query, 200)));
 
     let tavily = match Tavily::builder(api_key).build() {
         Ok(t) => t,
@@ -22,28 +22,28 @@ async fn perform_search(query: &str, api_key: &str, include_answer: bool, includ
         .max_results(max_results);
 
     let request_json = serde_json::to_string(&request).unwrap_or_else(|_| "Failed to serialize request".to_string());
-    crate::log_to_file(debug, &format!("Tavily Request: {}", crate::truncate_str(&request_json, 500)));
+    crate::utils::log_to_file(debug, &format!("Tavily Request: {}", crate::utils::truncate_str(&request_json, 500)));
 
     for attempt in 0..3 {
         if attempt > 0 {
             let delay = Duration::from_secs(2u64.pow(attempt - 1));
-            crate::log_to_file(debug, &format!("Retrying Tavily search in {}s (attempt {})", delay.as_secs(), attempt + 1));
+            crate::utils::log_to_file(debug, &format!("Retrying Tavily search in {}s (attempt {})", delay.as_secs(), attempt + 1));
             sleep(delay).await;
         }
-        crate::log_to_file(debug, &format!("Tavily Query Attempt {}: {}", attempt + 1, crate::truncate_str(query, 200)));
+        crate::utils::log_to_file(debug, &format!("Tavily Query Attempt {}: {}", attempt + 1, crate::utils::truncate_str(query, 200)));
 
         let start_time = std::time::Instant::now();
         match tavily.call(&request).await {
             Ok(response) => {
                 let elapsed = start_time.elapsed();
-                crate::log_to_file(debug, &format!("Tavily Response ({}ms): success", elapsed.as_millis()));
+                crate::utils::log_to_file(debug, &format!("Tavily Response ({}ms): success", elapsed.as_millis()));
 
                 let mut output_parts = Vec::new();
 
             if include_answer {
                 if let Some(answer) = response.answer {
                     let final_answer = if answer_mode == "basic" && answer.len() > 200 {
-                        crate::log_to_file(debug, &format!("Summarizing answer from {} to 3 sentences", answer.len()));
+                        crate::utils::log_to_file(debug, &format!("Summarizing answer from {} to 3 sentences", answer.len()));
                         crate::tools::summarize_text(&answer, 3)
                     } else {
                         answer
@@ -67,20 +67,19 @@ async fn perform_search(query: &str, api_key: &str, include_answer: bool, includ
             }
 
                 let result = output_parts.join("\n");
-                crate::log_to_file(debug, &format!("Tavily Response: {}", result));
+                crate::utils::log_to_file(debug, &format!("Tavily Response: {}", result));
                 return Ok(result);
             }
             Err(e) => {
                 let elapsed = start_time.elapsed();
-                crate::log_to_file(debug, &format!("Tavily Error (attempt {}, {}ms): {}", attempt + 1, elapsed.as_millis(), e));
+                crate::utils::log_to_file(debug, &format!("Tavily Error (attempt {}, {}ms): {}", attempt + 1, elapsed.as_millis(), e));
                 if attempt == 2 {
                     return Err(format!("Search failed after 3 attempts: {}", e));
                 }
-                // Continue to next attempt
             }
         }
     }
-    Err("Search failed: max retries exceeded".to_string())
+    unreachable!()
 }
 
 

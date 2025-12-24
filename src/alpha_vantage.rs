@@ -3,14 +3,18 @@ use colored::Colorize;
 use anyhow::{anyhow, Result};
 use serde_json::{Value, Map};
 use regex::Regex;
+use once_cell::sync::Lazy;
+
+static DATE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^\d{4}-\d{2}-\d{2}").unwrap()
+});
 
 fn find_time_series_key(json: &Value) -> Option<String> {
-    let date_regex = Regex::new(r"^\d{4}-\d{2}-\d{2}").unwrap();
     if let Value::Object(map) = json {
         for (key, value) in map {
             if let Value::Object(ts_map) = value {
                 // Check if at least one key looks like a date
-                if ts_map.keys().any(|k| date_regex.is_match(k)) {
+                if ts_map.keys().any(|k| DATE_REGEX.is_match(k)) {
                     return Some(key.clone());
                 }
             }
@@ -20,9 +24,8 @@ fn find_time_series_key(json: &Value) -> Option<String> {
 }
 
 fn limit_time_series(ts_map: &mut Map<String, Value>, n: usize) {
-    let date_regex = Regex::new(r"^\d{4}-\d{2}-\d{2}").unwrap();
     let mut dates: Vec<String> = ts_map.keys()
-        .filter(|k| date_regex.is_match(k))
+        .filter(|k| DATE_REGEX.is_match(k))
         .cloned()
         .collect();
     dates.sort_by(|a, b| b.cmp(a)); // descending
@@ -52,7 +55,7 @@ pub async fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, ou
         symbol
     );
 
-    crate::log_to_file(debug, &format!("Alpha Vantage Query: function={}, symbol={}, outputsize={}, limit={:?}", function, symbol, outputsize_param, limit));
+    crate::utils::log_to_file(debug, &format!("Alpha Vantage Query: function={}, symbol={}, outputsize={}, limit={:?}", function, symbol, outputsize_param, limit));
 
     let response = client
         .get(&url)
@@ -65,7 +68,7 @@ pub async fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, ou
         .await
         .map_err(|e| anyhow!("Failed to parse Alpha Vantage response: {}", e).context("Response parsing error"))?;
 
-    crate::log_to_file(debug, &format!("Alpha Vantage Response: {}", response_text));
+    crate::utils::log_to_file(debug, &format!("Alpha Vantage Response: {}", response_text));
 
     let n = limit.unwrap_or(5);
     if n == 0 {

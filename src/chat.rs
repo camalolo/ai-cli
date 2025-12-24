@@ -6,11 +6,11 @@ use crate::config::Config;
 use spinners::{Spinner, Spinners};
 use async_openai::{Client, config::OpenAIConfig, types::{CreateChatCompletionRequest, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent, ChatCompletionTool, ChatCompletionToolType, FunctionObject}};
 
+#[derive(Debug)]
 pub struct ChatManager {
-    config: Config, // Store configuration
-    history: Vec<Value>, // Stores user and assistant messages
-    cleaned_up: bool,
-    system_instruction: String, // Stored separately for the AI provider
+    config: Config,
+    history: Vec<Value>,
+    system_instruction: String,
 }
 
 impl ChatManager {
@@ -53,8 +53,7 @@ impl ChatManager {
     pub fn new(config: Config) -> Self {
         ChatManager {
             config,
-            history: Vec::new(), // Start empty; system_instruction is separate
-            cleaned_up: false,
+            history: Vec::new(),
             system_instruction: Self::build_system_instruction(),
         }
     }
@@ -188,7 +187,7 @@ impl ChatManager {
         });
         self.history.push(user_message);
 
-        crate::log_to_file(debug, &format!("LLM Query: {}", crate::truncate_str(message, 200)));
+        crate::utils::log_to_file(debug, &format!("LLM Query: {}", crate::utils::truncate_str(message, 200)));
 
 
 
@@ -240,7 +239,7 @@ impl ChatManager {
         let response_json: Value = serde_json::to_value(&response)
             .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
 
-        crate::log_to_file(debug, &format!("LLM Response: {}", crate::truncate_str(&response_json.to_string(), 500)));
+        crate::utils::log_to_file(debug, &format!("LLM Response: {}", crate::utils::truncate_str(&response_json.to_string(), 500)));
 
         // Add assistant response to history in OpenAI format
         for choice in &response.choices {
@@ -252,13 +251,10 @@ impl ChatManager {
     }
 
     pub fn cleanup(&mut self, is_signal: bool) {
-        if !self.cleaned_up {
-            self.history.clear();
-            self.cleaned_up = true;
-            println!("{}", "Shutting down...".color(Color::Cyan));
-            if is_signal {
-                std::thread::sleep(std::time::Duration::from_secs(3));
-            }
+        self.history.clear();
+        println!("{}", "Shutting down...".color(Color::Cyan));
+        if is_signal {
+            std::thread::sleep(std::time::Duration::from_secs(3));
         }
     }
 }
