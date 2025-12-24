@@ -44,10 +44,7 @@ async fn perform_search(query: &str, api_key: &str, include_answer: bool, includ
                 if let Some(answer) = response.answer {
                     let final_answer = if answer_mode == "basic" && answer.len() > 200 {
                         crate::log_to_file(debug, &format!("Summarizing answer from {} to 3 sentences", answer.len()));
-                        let mut summariser = pithy::Summariser::new();
-                        summariser.add_raw_text("answer".to_string(), answer.clone(), ".", 10, 500, false);
-                        let top_sentences = summariser.approximate_top_sentences(3, 0.3, 0.1);
-                        top_sentences.into_iter().map(|s| s.text).collect::<Vec<_>>().join(" ")
+                        crate::tools::summarize_text(&answer, 3)
                     } else {
                         answer
                     };

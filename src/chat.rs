@@ -129,6 +129,11 @@ impl ChatManager {
                         "type": "string",
                         "enum": ["compact", "full"],
                         "description": "The size of the output data. 'compact' returns the last 100 data points, 'full' returns all available data. Defaults to 'compact'."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of most recent data points to return (default 5)",
+                        "default": 5
                     }
                 },
                 "required": ["function", "symbol"]

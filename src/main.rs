@@ -9,7 +9,7 @@ use build_time::build_time_local;
 
 mod config;
 use config::Config;
-use config::{mask_or_display, mask_password};
+use config::mask_value;
 
 mod chat;
 mod shell;
@@ -78,6 +78,16 @@ async fn handle_llm_response(
     Ok(())
 }
 
+async fn send_llm_input(chat_manager: Arc<Mutex<ChatManager>>, llm_input: String, args: &Args) -> Result<()> {
+    match chat_manager.lock().await.send_message(&llm_input, false, args.debug).await {
+        Ok(response) => {
+            handle_llm_response(&response, chat_manager.clone(), args.debug, false, false, false).await?;
+        },
+        Err(e) => print_error(&format!("Error: {}", e)),
+    }
+    Ok(())
+}
+
 async fn handle_user_input(
     user_input: &str,
     rl: &mut DefaultEditor,
@@ -116,23 +126,13 @@ async fn handle_user_input(
         let command: &str = command.trim();
          if command.is_empty() {
             let output = interactive_shell(args.debug);
-            let llm_input = format!("User ran interactive shell session with output:\n{}", output);
-            match chat_manager.lock().await.send_message(&llm_input, false, args.debug).await {
-                 Ok(response) => {
-                     handle_llm_response(&response, chat_manager.clone(), args.debug, false, false, false).await?;
-                 },
-                 Err(e) => print_error(&format!("Error: {}", e)),
-             }
+         let llm_input = format!("User ran interactive shell session with output:\n{}", output);
+         send_llm_input(chat_manager.clone(), llm_input, args).await?;
          } else {
             let output = execute_command(command, args.debug).unwrap_or_else(|e| e.to_string());
             let llm_input = format!("User ran command '!{}' with output: {}", command, output);
             println!("{}", output);
-            match chat_manager.lock().await.send_message(&llm_input, false, args.debug).await {
-                 Ok(response) => {
-                     handle_llm_response(&response, chat_manager.clone(), args.debug, false, false, false).await?;
-                 },
-                 Err(e) => print_error(&format!("Error: {}", e)),
-             }
+            send_llm_input(chat_manager.clone(), llm_input, args).await?;
          }
      } else {
         let response = match chat_manager.lock().await.send_message(user_input, false, args.debug).await {
@@ -159,21 +159,21 @@ async fn load_and_display_config(debug: bool) -> Result<Config> {
     println!("Loaded config: base_url={}, version={}, model={}, key_present={}", config.api_base_url, config.api_version, config.model, !config.api_key.is_empty());
 
     if debug {
-        log_to_file(debug, &format!("=== AI Provider Configuration ==="));
+        log_to_file(debug, "=== AI Provider Configuration ===");
         log_to_file(debug, &format!("API Base URL: {}", config.api_base_url));
         log_to_file(debug, &format!("API Version: {}", config.api_version));
         log_to_file(debug, &format!("Model: {}", config.model));
         log_to_file(debug, &format!("API Key: {}***", &config.api_key.chars().take(4).collect::<String>()));
         log_to_file(debug, &format!("Endpoint: {}", config.get_api_endpoint()));
-        log_to_file(debug, &format!("Auth Method: Header (Bearer)"));
-        log_to_file(debug, &format!("================================"));
-        log_to_file(debug, &format!("=== SMTP Configuration ==="));
+        log_to_file(debug, "Auth Method: Header (Bearer)");
+        log_to_file(debug, "================================");
+        log_to_file(debug, "=== SMTP Configuration ===");
         log_to_file(debug, &format!("SMTP_SERVER_IP: {}", config.smtp_server));
-        log_to_file(debug, &format!("SMTP_USERNAME: {}", mask_or_display(&config.smtp_username)));
-        log_to_file(debug, &format!("SMTP_PASSWORD: {}", mask_password(&config.smtp_password)));
-        log_to_file(debug, &format!("DESTINATION_EMAIL: {}", mask_or_display(&config.destination_email)));
-        log_to_file(debug, &format!("SENDER_EMAIL: {}", mask_or_display(&config.sender_email)));
-        log_to_file(debug, &format!("=========================="));
+        log_to_file(debug, &format!("SMTP_USERNAME: {}", mask_value(&config.smtp_username, false)));
+        log_to_file(debug, &format!("SMTP_PASSWORD: {}", mask_value(&config.smtp_password, true)));
+        log_to_file(debug, &format!("DESTINATION_EMAIL: {}", mask_value(&config.destination_email, false)));
+        log_to_file(debug, &format!("SENDER_EMAIL: {}", mask_value(&config.sender_email, false)));
+        log_to_file(debug, "==========================");
     }
     Ok(config)
 }
@@ -229,16 +229,12 @@ async fn run_interactive_loop(chat_manager: Arc<Mutex<ChatManager>>, args: &Args
 
     // Main input loop with rustyline
     loop {
-        let conv_length: usize = {
-            let manager = chat_manager.lock().await;
-            manager
-                .get_history()
-                .iter()
-                .filter_map(|msg| {
-                    msg.get("content").and_then(|c| c.as_str()).map(|s| s.len())
-                })
-                .sum()
-        };
+        let conv_length: usize = chat_manager.lock().await
+            .get_history()
+            .iter()
+            .filter_map(|msg| msg.get("content")?.as_str())
+            .map(|s| s.len())
+            .sum();
 
         let base_prompt = format!("[{}] > ", conv_length);
         let prompt = if cfg!(target_os = "windows") {

@@ -3,17 +3,17 @@ use serde_json::{json, Value};
 use regex::Regex;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use termimad::MadSkin;
+use termimad::crossterm::style::Color as TermColor;
+use termimad::crossterm::style::Attribute;
+
 use crate::command::execute_command;
 use crate::search::search_online;
 use crate::email::send_email;
 use crate::alpha_vantage::alpha_vantage_query;
 use crate::file_edit::file_editor;
-use termimad::MadSkin;
-use termimad::crossterm::style::Color as TermColor;
-use termimad::crossterm::style::Attribute;
-
 use crate::chat::ChatManager;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 pub fn process_execute_command(args: &Value, debug: bool, allow_commands: bool) -> (String, bool) {
     let command = args.get("command").and_then(|c| c.as_str());
@@ -93,6 +93,23 @@ fn tool_result(name: &str, msg: &str) -> String {
 
 fn tool_error(name: &str, err: &str) -> String {
     normalize_output(&format!("[Tool error] {}: {}", name, err))
+}
+
+async fn handle_async_tool_result<Fut>(fut: Fut, tool_name: &str) -> (String, bool)
+where
+    Fut: std::future::Future<Output = Result<String>>,
+{
+    match fut.await {
+        Ok(result) => (tool_result(tool_name, &result), false),
+        Err(e) => (tool_error(tool_name, &e.to_string()), false),
+    }
+}
+
+pub fn summarize_text(text: &str, num_sentences: usize) -> String {
+    let mut summariser = pithy::Summariser::new();
+    summariser.add_raw_text("content".to_string(), text.to_string(), ".", 10, 500, false);
+    let top_sentences = summariser.approximate_top_sentences(num_sentences, 0.3, 0.1);
+    top_sentences.into_iter().map(|s| s.text).collect::<Vec<_>>().join(" ")
 }
 
 /// Displays normalized LLM output with Markdown rendering
@@ -199,18 +216,14 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                     results.push(result);
                     if rejected { rejection_occurred = true; }
                 }
-                "scrape_url" => {
-                    let url = args.get("url").and_then(|u| u.as_str());
-                    let mode = args.get("mode").and_then(|m| m.as_str()).unwrap_or("summarized");
-                     if let Some(u) = url {
-                          match crate::scrape::scrape_url(u, mode, debug).await {
-                             Ok(result) => results.push(tool_result("scrape_url", &result)),
-                             Err(e) => results.push(tool_error("scrape_url", &e.to_string())),
-                         }
-                     } else {
-                         results.push(tool_error("scrape_url", "Missing 'url' parameter"));
-                     }
-                }
+                 "scrape_url" => {
+                     let result = handle_async_tool_result(async {
+                         let url = args.get("url").and_then(|u| u.as_str()).ok_or_else(|| anyhow!("Missing 'url' parameter"))?;
+                         let mode = args.get("mode").and_then(|m| m.as_str()).unwrap_or("summarized");
+                         crate::scrape::scrape_url(url, mode, debug).await
+                     }, "scrape_url").await;
+                     results.push(result.0);
+                 }
                 "send_email" => {
                     let subject = args.get("subject").and_then(|s| s.as_str()).unwrap_or("unknown");
                     println!("ai-cli is sending email: {}", subject.color(Color::Cyan).bold());
@@ -218,20 +231,17 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                     results.push(result);
                     if rejected { rejection_occurred = true; }
                 }
-                 "alpha_vantage_query" => {
-                      let function = args.get("function").and_then(|f| f.as_str());
-                      let symbol = args.get("symbol").and_then(|s| s.as_str());
-                      let outputsize = args.get("outputsize").and_then(|s| s.as_str());
-                        if let (Some(func), Some(sym)) = (function, symbol) {
+                   "alpha_vantage_query" => {
+                       let result = handle_async_tool_result(async {
+                            let function = args.get("function").and_then(|f| f.as_str()).ok_or_else(|| anyhow!("Missing 'function' parameter"))?;
+                            let symbol = args.get("symbol").and_then(|s| s.as_str()).ok_or_else(|| anyhow!("Missing 'symbol' parameter"))?;
+                            let outputsize = args.get("outputsize").and_then(|s| s.as_str());
+                            let limit = args.get("limit").and_then(|l| l.as_u64()).map(|l| l as usize);
                             let api_key = chat_manager.lock().await.get_alpha_vantage_api_key().to_string();
-                             match alpha_vantage_query(func, sym, &api_key, outputsize, debug).await {
-                              Ok(result) => results.push(tool_result("alpha_vantage_query", &result)),
-                              Err(e) => results.push(tool_error("alpha_vantage_query", &e.to_string())),
-                          }
-                      } else {
-                          results.push(tool_error("alpha_vantage_query", "Missing required parameters"));
-                      }
-                 }
+                            alpha_vantage_query(function, symbol, &api_key, outputsize, limit, debug).await
+                       }, "alpha_vantage_query").await;
+                       results.push(result.0);
+                   }
                 "file_editor" => {
                     let filename_opt = args.get("filename").and_then(|f| f.as_str());
                     let filename = filename_opt.unwrap_or("unknown");

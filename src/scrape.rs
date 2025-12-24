@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use colored::{Color, Colorize};
-use pithy;
 use reqwest::{StatusCode, Url};
 use readability::extractor;
 
@@ -55,10 +54,7 @@ pub async fn scrape_url(url: &str, mode: &str, debug: bool) -> Result<String> {
         result
     } else {
         crate::log_to_file(debug, &format!("Summarizing content from {} chars", result.len()));
-        let mut summariser = pithy::Summariser::new();
-        summariser.add_raw_text("content".to_string(), result.clone(), ".", 10, 500, false);
-        let top_sentences = summariser.approximate_top_sentences(3, 0.3, 0.1);
-        let summary = top_sentences.into_iter().map(|s| s.text).collect::<Vec<_>>().join(" ");
+        let summary = crate::tools::summarize_text(&result, 3);
         if summary.is_empty() {
             result // fallback to full content if summarization fails
         } else {

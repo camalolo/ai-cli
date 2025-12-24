@@ -60,19 +60,11 @@ impl Config {
 
 const EMPTY_MSG: &str = "<not set>";
 
-pub fn mask_or_display(value: &str) -> String {
-    if value.is_empty() {
-        EMPTY_MSG.to_string()
+pub fn mask_value(value: &str, mask_empty: bool) -> String {
+    if mask_empty {
+        if value.is_empty() { EMPTY_MSG.to_string() } else { "***masked***".to_string() }
     } else {
         value.to_string()
-    }
-}
-
-pub fn mask_password(password: &str) -> String {
-    if password.is_empty() {
-        EMPTY_MSG.to_string()
-    } else {
-        "***masked***".to_string()
     }
 }
 
