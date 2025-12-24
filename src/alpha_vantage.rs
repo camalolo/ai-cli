@@ -5,11 +5,11 @@ use serde_json::{Value, Map};
 use regex::Regex;
 
 fn find_time_series_key(json: &Value) -> Option<String> {
+    let date_regex = Regex::new(r"^\d{4}-\d{2}-\d{2}").unwrap();
     if let Value::Object(map) = json {
         for (key, value) in map {
             if let Value::Object(ts_map) = value {
                 // Check if at least one key looks like a date
-                let date_regex = Regex::new(r"^\d{4}-\d{2}-\d{2}").unwrap();
                 if ts_map.keys().any(|k| date_regex.is_match(k)) {
                     return Some(key.clone());
                 }
@@ -67,17 +67,19 @@ pub async fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, ou
 
     crate::log_to_file(debug, &format!("Alpha Vantage Response: {}", response_text));
 
-    if let Some(n) = limit {
-        if n > 0 {
-            if let Ok(mut json) = serde_json::from_str::<Value>(&response_text) {
-                if let Some(time_series_key) = find_time_series_key(&json) {
-                    if let Some(Value::Object(ts_map)) = json.get_mut(&time_series_key) {
-                        limit_time_series(ts_map, n);
-                    }
+    let n = limit.unwrap_or(5);
+    if n == 0 {
+        return Err(anyhow!("Limit cannot be 0. Use a positive number or omit for default (5)."));
+    }
+    if n > 0 {
+        if let Ok(mut json) = serde_json::from_str::<Value>(&response_text) {
+            if let Some(time_series_key) = find_time_series_key(&json) {
+                if let Some(Value::Object(ts_map)) = json.get_mut(&time_series_key) {
+                    limit_time_series(ts_map, n);
                 }
-                if let Ok(limited_text) = serde_json::to_string(&json) {
-                    return Ok(limited_text);
-                }
+            }
+            if let Ok(limited_text) = serde_json::to_string(&json) {
+                return Ok(limited_text);
             }
         }
     }
