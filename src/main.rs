@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use build_time::build_time_local;
+use std::process::Command;
 
 mod config;
 use config::Config;
@@ -129,7 +130,6 @@ async fn handle_user_input(
 
 async fn load_and_display_config(debug: bool) -> Result<Config> {
     let config = Config::load()?;
-    println!("Loaded config: base_url={}, version={}, model={}, key_present={}", config.api_base_url, config.api_version, config.model, !config.api_key.is_empty());
 
     if debug {
         log_to_file(debug, "=== AI Provider Configuration ===");
@@ -209,7 +209,20 @@ async fn run_interactive_loop(chat_manager: Arc<Mutex<ChatManager>>, args: &Args
             .map(|s| s.len())
             .sum();
 
-        let base_prompt = format!("[{}] > ", conv_length);
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).display().to_string();
+        let git_branch = Command::new("git")
+            .args(["branch", "--show-current"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let mut prompt_parts = vec![current_dir];
+        if let Some(branch) = git_branch {
+            prompt_parts.push(format!("[{}]", branch));
+        }
+        prompt_parts.push(format!("[{}]", conv_length));
+        let base_prompt = format!("{} > ", prompt_parts.join(" "));
         let prompt = if cfg!(target_os = "windows") {
             // On Windows, avoid colored prompts due to compatibility issues
             base_prompt

@@ -4,7 +4,8 @@ use colored::{Color, Colorize};
 use serde_json::{json, Value};
 use crate::config::Config;
 use spinners::{Spinner, Spinners};
-use async_openai::{Client, config::OpenAIConfig, types::{CreateChatCompletionRequest, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent, ChatCompletionTool, ChatCompletionToolType, FunctionObject}};
+use async_openai::{Client, config::OpenAIConfig, error::OpenAIError, types::{CreateChatCompletionRequest, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent, ChatCompletionTool, ChatCompletionToolType, FunctionObject}};
+use tokio::time::{sleep, Duration};
 
 #[derive(Debug)]
 pub struct ChatManager {
@@ -228,26 +229,95 @@ impl ChatManager {
             Some(Spinner::new(Spinners::Dots, "".into()))
         };
 
-        let response = client.chat().create(request).await
-            .map_err(|e| anyhow!("API request failed: {}", e))?;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                let delay = Duration::from_secs(2u64.pow(attempt - 1));
+                crate::utils::log_to_file(debug, &format!("Retrying LLM API call in {}s (attempt {}/{})", delay.as_secs(), attempt + 1, 3));
+                sleep(delay).await;
+            }
 
-        if let Some(mut spinner) = spinner {
-            spinner.stop();
-            print!("\r\x1b[2K");
+            crate::utils::log_to_file(debug, &format!("LLM API Call Attempt {}/{}", attempt + 1, 3));
+
+            let start_time = std::time::Instant::now();
+            match client.chat().create(request.clone()).await {
+                Ok(response) => {
+                    let elapsed = start_time.elapsed();
+                    crate::utils::log_to_file(debug, &format!("LLM API Response ({}ms): success", elapsed.as_millis()));
+
+                    if let Some(mut spinner) = spinner {
+                        spinner.stop();
+                        print!("\r\x1b[2K");
+                    }
+
+                    let response_json: Value = serde_json::to_value(&response)
+                        .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
+
+                    crate::utils::log_to_file(debug, &format!("LLM Response: {}", crate::utils::truncate_str(&response_json.to_string(), 500)));
+
+                    for choice in &response.choices {
+                        self.history.push(serde_json::to_value(&choice.message)
+                            .map_err(|e| anyhow!("Failed to serialize message: {}", e))?);
+                    }
+
+                    return Ok(response_json);
+                }
+                Err(e) => {
+                    let elapsed = start_time.elapsed();
+
+                    let status_code = match &e {
+                        OpenAIError::Reqwest(reqwest_err) => {
+                            reqwest_err.status().map(|s| s.as_u16())
+                        }
+                        _ => None,
+                    };
+
+                    crate::utils::log_to_file(debug, &format!("LLM API Error (attempt {}/{} in {}ms): {}",
+                        attempt + 1,
+                        3,
+                        elapsed.as_millis(),
+                        e
+                    ));
+
+                    let should_retry = match status_code {
+                        Some(429) | Some(502) | Some(503) | Some(504) => true,
+                        Some(code) if code >= 500 => true,
+                        _ => false,
+                    };
+
+                    if should_retry && attempt < 2 {
+                        crate::utils::log_to_file(debug, &format!("Retryable error detected (status {:?}), will retry...", status_code));
+                    } else if attempt == 2 {
+                        crate::utils::log_to_file(debug, "Max retries reached");
+                        let final_error = if let Some(code) = status_code {
+                            anyhow!("API request failed after 3 attempts: {} (HTTP {})", e, code)
+                        } else {
+                            anyhow!("API request failed after 3 attempts: {}", e)
+                        };
+
+                        if let Some(mut spinner) = spinner {
+                            spinner.stop();
+                            print!("\r\x1b[2K");
+                        }
+
+                        return Err(final_error);
+                    } else {
+                        let final_error = if let Some(code) = status_code {
+                            anyhow!("API request failed: {} (HTTP {})", e, code)
+                        } else {
+                            anyhow!("API request failed: {}", e)
+                        };
+
+                        if let Some(mut spinner) = spinner {
+                            spinner.stop();
+                            print!("\r\x1b[2K");
+                        }
+
+                        return Err(final_error);
+                    }
+                }
+            }
         }
-
-        let response_json: Value = serde_json::to_value(&response)
-            .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
-
-        crate::utils::log_to_file(debug, &format!("LLM Response: {}", crate::utils::truncate_str(&response_json.to_string(), 500)));
-
-        // Add assistant response to history in OpenAI format
-        for choice in &response.choices {
-            self.history.push(serde_json::to_value(&choice.message)
-                .map_err(|e| anyhow!("Failed to serialize message: {}", e))?);
-        }
-
-        Ok(response_json)
+        unreachable!()
     }
 
     pub fn cleanup(&mut self, is_signal: bool) {
