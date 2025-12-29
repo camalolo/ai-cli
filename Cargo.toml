@@ -23,6 +23,7 @@ crossterm = "0.27"
 anyhow = "1.0"
 dunce = "1.0"
 readability = "0.3"
+console = { version = "0.16", features = ["std"] }
 dialoguer = "0.11"
 config = "0.14"
 log = "0.4"
