@@ -320,6 +320,146 @@ impl ChatManager {
         unreachable!()
     }
 
+    pub async fn send_tool_results(&mut self, tool_results: Vec<(String, String)>, skip_spinner: bool, debug: bool) -> Result<Value> {
+        // Add tool result messages to history in OpenAI format
+        for (tool_call_id, result) in tool_results {
+            let tool_message = json!({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": result
+            });
+            self.history.push(tool_message);
+            crate::utils::log_to_file(debug, &format!("Tool result for {}: {}", tool_call_id, crate::utils::truncate_str(&result, 200)));
+        }
+
+        // Construct the body using async-openai types for type safety
+        let mut chat_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
+
+        // Add system instruction
+        chat_messages.push(ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+            content: ChatCompletionRequestSystemMessageContent::Text(self.system_instruction.clone()),
+            name: None,
+        }));
+
+        // Add conversation history
+        for msg in &self.history {
+            let message: ChatCompletionRequestMessage = serde_json::from_value(msg.clone())
+                .map_err(|e| anyhow!("Failed to parse message: {}", e))?;
+            chat_messages.push(message);
+        }
+
+        // Define tools using async-openai types
+        let tools = Self::build_tools();
+
+        let request = CreateChatCompletionRequest {
+            model: self.config.model.clone(),
+            messages: chat_messages,
+            tools: Some(tools),
+            ..Default::default()
+        };
+
+        let config = OpenAIConfig::new()
+            .with_api_key(self.config.api_key.clone())
+            .with_api_base(format!("{}/{}", self.config.api_base_url, self.config.api_version));
+        let client = Client::with_config(config);
+
+        let spinner = if skip_spinner {
+            None
+        } else {
+            Some(Spinner::new(Spinners::Dots, "".into()))
+        };
+
+        for attempt in 0..3 {
+            if attempt > 0 {
+                let delay = Duration::from_secs(2u64.pow(attempt - 1));
+                crate::utils::log_to_file(debug, &format!("Retrying LLM API call in {}s (attempt {}/{})", delay.as_secs(), attempt + 1, 3));
+                sleep(delay).await;
+            }
+
+            crate::utils::log_to_file(debug, &format!("LLM API Call Attempt {}/{}", attempt + 1, 3));
+
+            let start_time = std::time::Instant::now();
+            match client.chat().create(request.clone()).await {
+                Ok(response) => {
+                    let elapsed = start_time.elapsed();
+                    crate::utils::log_to_file(debug, &format!("LLM API Response ({}ms): success", elapsed.as_millis()));
+
+                    if let Some(mut spinner) = spinner {
+                        spinner.stop();
+                        print!("\r\x1b[2K");
+                    }
+
+                    let response_json: Value = serde_json::to_value(&response)
+                        .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
+
+                    crate::utils::log_to_file(debug, &format!("LLM Response: {}", crate::utils::truncate_str(&response_json.to_string(), 500)));
+
+                    for choice in &response.choices {
+                        self.history.push(serde_json::to_value(&choice.message)
+                            .map_err(|e| anyhow!("Failed to serialize message: {}", e))?);
+                    }
+
+                    return Ok(response_json);
+                }
+                Err(e) => {
+                    let elapsed = start_time.elapsed();
+
+                    let status_code = match &e {
+                        OpenAIError::Reqwest(reqwest_err) => {
+                            reqwest_err.status().map(|s| s.as_u16())
+                        }
+                        _ => None,
+                    };
+
+                    crate::utils::log_to_file(debug, &format!("LLM API Error (attempt {}/{} in {}ms): {}",
+                        attempt + 1,
+                        3,
+                        elapsed.as_millis(),
+                        e
+                    ));
+
+                    let should_retry = match status_code {
+                        Some(429) | Some(502) | Some(503) | Some(504) => true,
+                        Some(code) if code >= 500 => true,
+                        _ => false,
+                    };
+
+                    if should_retry && attempt < 2 {
+                        crate::utils::log_to_file(debug, &format!("Retryable error detected (status {:?}), will retry...", status_code));
+                    } else if attempt == 2 {
+                        crate::utils::log_to_file(debug, "Max retries reached");
+                        let final_error = if let Some(code) = status_code {
+                            anyhow!("API request failed after 3 attempts: {} (HTTP {})", e, code)
+                        } else {
+                            anyhow!("API request failed after 3 attempts: {}", e)
+                        };
+
+                        if let Some(mut spinner) = spinner {
+                            spinner.stop();
+                            print!("\r\x1b[2K");
+                        }
+
+                        return Err(final_error);
+                    } else {
+                        let final_error = if let Some(code) = status_code {
+                            anyhow!("API request failed: {} (HTTP {})", e, code)
+                        } else {
+                            anyhow!("API request failed: {}", e)
+                        };
+
+                        if let Some(mut spinner) = spinner {
+                            spinner.stop();
+                            print!("\r\x1b[2K");
+                        }
+
+                        return Err(final_error);
+                    }
+                }
+            }
+        }
+        unreachable!()
+    }
+
     pub fn cleanup(&mut self, is_signal: bool) {
         self.history.clear();
         println!("{}", "Shutting down...".color(Color::Cyan));

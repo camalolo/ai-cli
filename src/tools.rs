@@ -147,7 +147,7 @@ pub fn display_response(response: &Value) {
     }
 }
 
-fn extract_tool_calls(response: &Value) -> Vec<(String, Value)> {
+fn extract_tool_calls(response: &Value) -> Vec<(String, String, Value)> {
     response
         .get("choices")
         .and_then(|c| c.as_array())
@@ -162,6 +162,10 @@ fn extract_tool_calls(response: &Value) -> Vec<(String, Value)> {
                     tool_calls
                         .iter()
                         .filter_map(|tc| {
+                            let tool_call_id = tc.get("id")
+                                .and_then(|id| id.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let func = tc.get("function");
                             let name = func
                                 .and_then(|f| f.get("name"))
@@ -172,8 +176,8 @@ fn extract_tool_calls(response: &Value) -> Vec<(String, Value)> {
                                 .and_then(|f| f.get("arguments"))
                                 .and_then(|a| serde_json::from_str::<Value>(a.as_str()?).ok())
                                 .unwrap_or(json!({}));
-                            if !name.is_empty() {
-                                Some((name, args))
+                            if !name.is_empty() && !tool_call_id.is_empty() {
+                                Some((tool_call_id, name, args))
                             } else {
                                 None
                             }
@@ -199,18 +203,18 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
         }
 
         let mut rejection_occurred = false;
-        let mut results = Vec::new();
-        for (func_name, args) in tool_calls {
+        let mut tool_results: Vec<(String, String)> = Vec::new(); // (tool_call_id, result)
+        for (tool_call_id, func_name, args) in tool_calls {
             match func_name.as_str() {
                 "execute_command" => {
                     let (result, rejected) = process_execute_command(&args, debug, allow_commands);
-                    results.push(result);
+                    tool_results.push((tool_call_id, result));
                     if rejected { rejection_occurred = true; }
                 }
 
                 "search_online" => {
                     let (result, rejected) = process_search_online(&args, chat_manager, debug).await;
-                    results.push(result);
+                    tool_results.push((tool_call_id, result));
                     if rejected { rejection_occurred = true; }
                 }
                  "scrape_url" => {
@@ -219,25 +223,25 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                          let mode = get_opt_str(&args, "mode", "summarized");
                          crate::scrape::scrape_url(url, &mode, debug).await
                      }, "scrape_url").await;
-                     results.push(result.0);
+                     tool_results.push((tool_call_id, result.0));
                  }
                 "send_email" => {
                     let subject = get_opt_str(&args, "subject", "unknown");
                     println!("ai-cli is sending email: {}", subject.color(Color::Cyan).bold());
                     let (result, rejected) = process_send_email(&args, chat_manager, debug).await;
-                    results.push(result);
+                    tool_results.push((tool_call_id, result));
                     if rejected { rejection_occurred = true; }
                 }
                    "alpha_vantage_query" => {
                        let result = handle_async_tool_result(async {
-                            let function = args.get("function").and_then(|f| f.as_str()).ok_or_else(|| anyhow!("Missing 'function' parameter"))?;
-                            let symbol = args.get("symbol").and_then(|s| s.as_str()).ok_or_else(|| anyhow!("Missing 'symbol' parameter"))?;
-                            let outputsize = args.get("outputsize").and_then(|s| s.as_str());
-                            let limit = args.get("limit").and_then(|l| l.as_u64()).map(|l| l as usize);
-                            let api_key = chat_manager.lock().await.get_alpha_vantage_api_key().to_string();
-                            alpha_vantage_query(function, symbol, &api_key, outputsize, limit, debug).await
+                             let function = args.get("function").and_then(|f| f.as_str()).ok_or_else(|| anyhow!("Missing 'function' parameter"))?;
+                             let symbol = args.get("symbol").and_then(|s| s.as_str()).ok_or_else(|| anyhow!("Missing 'symbol' parameter"))?;
+                             let outputsize = args.get("outputsize").and_then(|s| s.as_str());
+                             let limit = args.get("limit").and_then(|l| l.as_u64()).map(|l| l as usize);
+                             let api_key = chat_manager.lock().await.get_alpha_vantage_api_key().to_string();
+                             alpha_vantage_query(function, symbol, &api_key, outputsize, limit, debug).await
                        }, "alpha_vantage_query").await;
-                       results.push(result.0);
+                       tool_results.push((tool_call_id, result.0));
                    }
                 "file_editor" => {
                     let filename_opt = args.get("filename").and_then(|f| f.as_str());
@@ -250,22 +254,20 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                     if let (Some(subcmd), Some(fname)) = (subcommand, filename_opt) {
                         let skip_confirmation = matches!(subcmd, "read" | "search"); // Only skip for non-destructive ops
                          let (result, rejected) = file_editor(subcmd, fname, data, replacement, skip_confirmation, debug);
-                         results.push(tool_result("file_editor", &result));
+                         tool_results.push((tool_call_id, tool_result("file_editor", &result)));
                          if rejected { rejection_occurred = true; }
                      } else {
-                         results.push(tool_error("file_editor", "Missing required parameters 'subcommand' or 'filename'"));
+                         tool_results.push((tool_call_id, tool_error("file_editor", "Missing required parameters 'subcommand' or 'filename'")));
                      }
                 }
                  _ => {
-                     results.push(tool_error("unknown", &format!("Unknown function: {}", func_name)));
+                     tool_results.push((tool_call_id, tool_error("unknown", &format!("Unknown function: {}", func_name))));
                  }
             }
         }
 
-        if !results.is_empty() {
-            let combined_results = results.join("\n");
-            let normalized_results = normalize_output(&combined_results);
-            current_response = chat_manager.lock().await.send_message(&normalized_results, quiet, debug).await?;
+        if !tool_results.is_empty() {
+            current_response = chat_manager.lock().await.send_tool_results(tool_results, quiet, debug).await?;
             display_response(&current_response);
             add_block_spacing();
             if rejection_occurred {
