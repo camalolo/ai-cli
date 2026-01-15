@@ -2,6 +2,7 @@ use clap::Parser;
 use anyhow::Result;
 use colored::{Color, Colorize};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -43,19 +44,20 @@ async fn handle_llm_response(
     quiet: bool,
     allow_commands: bool,
     process_tools: bool,
+    always_approve: &Arc<AtomicBool>,
 ) -> Result<()> {
     display_response(response);
     crate::tools::add_block_spacing();
     if process_tools {
-        process_tool_calls(response, &chat_manager, debug, quiet, allow_commands).await?;
+        process_tool_calls(response, &chat_manager, debug, quiet, allow_commands, always_approve).await?;
     }
     Ok(())
 }
 
-async fn send_llm_input(chat_manager: Arc<Mutex<ChatManager>>, llm_input: String, args: &Args) -> Result<()> {
+async fn send_llm_input(chat_manager: Arc<Mutex<ChatManager>>, llm_input: String, args: &Args, always_approve: &Arc<AtomicBool>) -> Result<()> {
     match chat_manager.lock().await.send_message(&llm_input, false, args.debug).await {
         Ok(response) => {
-            handle_llm_response(&response, chat_manager.clone(), args.debug, false, false, false).await?;
+            handle_llm_response(&response, chat_manager.clone(), args.debug, false, false, false, always_approve).await?;
         },
         Err(e) => print_error(&format!("Error: {}", e)),
     }
@@ -67,6 +69,7 @@ async fn handle_user_input(
     rl: &mut DefaultEditor,
     chat_manager: Arc<Mutex<ChatManager>>,
     args: &Args,
+    always_approve: &Arc<AtomicBool>,
 ) -> Result<bool> {
     // Add to history (skip empty lines and special commands)
     let input_lower = user_input.to_lowercase();
@@ -101,12 +104,12 @@ async fn handle_user_input(
          if command.is_empty() {
             let output = interactive_shell(args.debug);
          let llm_input = format!("User ran interactive shell session with output:\n{}", output);
-         send_llm_input(chat_manager.clone(), llm_input, args).await?;
+         send_llm_input(chat_manager.clone(), llm_input, args, always_approve).await?;
          } else {
             let output = execute_command(command, args.debug).unwrap_or_else(|e| e.to_string());
             let llm_input = format!("User ran command '!{}' with output: {}", command, output);
             println!("{}", output);
-            send_llm_input(chat_manager.clone(), llm_input, args).await?;
+            send_llm_input(chat_manager.clone(), llm_input, args, always_approve).await?;
          }
      } else {
         let response = match chat_manager.lock().await.send_message(user_input, false, args.debug).await {
@@ -121,7 +124,7 @@ async fn handle_user_input(
         };
 
         println!(); // Add blank line before response
-        if let Err(e) = handle_llm_response(&response, chat_manager.clone(), args.debug, false, false, true).await {
+        if let Err(e) = handle_llm_response(&response, chat_manager.clone(), args.debug, false, false, true, always_approve).await {
             print_error(&format!("Error processing tool calls: {}", e));
         }
     }
@@ -151,7 +154,7 @@ async fn load_and_display_config(debug: bool) -> Result<Config> {
     Ok(config)
 }
 
-async fn handle_single_prompt_mode(chat_manager: Arc<Mutex<ChatManager>>, args: &Args) -> Result<()> {
+async fn handle_single_prompt_mode(chat_manager: Arc<Mutex<ChatManager>>, args: &Args, always_approve: &Arc<AtomicBool>) -> Result<()> {
     let prompt = args.prompt.as_ref().unwrap();
     println!("{}", "Processing single prompt...".color(Color::Cyan));
     let response = match chat_manager.lock().await.send_message(prompt, true, args.debug).await {
@@ -169,14 +172,14 @@ async fn handle_single_prompt_mode(chat_manager: Arc<Mutex<ChatManager>>, args: 
             return Err(e);
         }
     };
-    if let Err(e) = handle_llm_response(&response, chat_manager.clone(), args.debug, true, args.allow_commands, true).await {
+    if let Err(e) = handle_llm_response(&response, chat_manager.clone(), args.debug, true, args.allow_commands, true, always_approve).await {
         print_error(&format!("Error processing tool calls: {}", e));
     }
     chat_manager.lock().await.cleanup(false);
     Ok(())
 }
 
-async fn run_interactive_loop(chat_manager: Arc<Mutex<ChatManager>>, args: &Args) -> Result<()> {
+async fn run_interactive_loop(chat_manager: Arc<Mutex<ChatManager>>, args: &Args, always_approve: &Arc<AtomicBool>) -> Result<()> {
     println!(
         "{}",
         "Welcome to AI CLI! Chat with me (type 'exit' to quit, 'clear' to reset conversation)."
@@ -236,7 +239,7 @@ async fn run_interactive_loop(chat_manager: Arc<Mutex<ChatManager>>, args: &Args
             Ok(line) => {
                 let user_input: &str = line.trim();
 
-                match handle_user_input(user_input, &mut rl, chat_manager.clone(), args).await {
+                match handle_user_input(user_input, &mut rl, chat_manager.clone(), args, always_approve).await {
                     Ok(true) => continue,
                     Ok(false) => break,
                     Err(e) => {
@@ -293,13 +296,16 @@ async fn main() -> Result<(), anyhow::Error> {
     let config = load_and_display_config(args.debug).await?;
 
     let chat_manager = Arc::new(Mutex::new(ChatManager::new(config)));
+    
+    // Create atomic bool for "always approve" mode (session-scoped)
+    let always_approve = Arc::new(AtomicBool::new(false));
 
     if args.prompt.is_some() {
-        handle_single_prompt_mode(chat_manager.clone(), &args).await?;
+        handle_single_prompt_mode(chat_manager.clone(), &args, &always_approve).await?;
         return Ok(());
     }
 
-    run_interactive_loop(chat_manager, &args).await?;
+    run_interactive_loop(chat_manager, &args, &always_approve).await?;
 
     Ok(())
 }

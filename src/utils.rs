@@ -52,3 +52,28 @@ pub fn confirm(prompt: &str) -> bool {
         .interact()
         .unwrap_or(false)
 }
+
+/// Prompts user with y/n/a options (yes/no/always)
+/// Returns (confirmed, always) tuple where:
+/// - confirmed: true if user selected yes or always
+/// - always: true if user selected always (approve all commands for this session)
+pub fn confirm_with_always(prompt: &str) -> (bool, bool) {
+    use std::io::{self, Write};
+    
+    loop {
+        print!("{} [y/n/a]: ", prompt);
+        io::stdout().flush().unwrap();
+        
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+        
+        match input.trim().to_lowercase().as_str() {
+            "y" | "yes" => return (true, false),
+            "n" | "no" => return (false, false),
+            "a" | "always" => return (true, true),
+            _ => {
+                println!("Please enter 'y' for yes, 'n' for no, or 'a' for always.");
+            }
+        }
+    }
+}

@@ -2,6 +2,7 @@ use colored::{Color, Colorize};
 use serde_json::{json, Value};
 use regex::Regex;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 use termimad::MadSkin;
 use termimad::crossterm::style::Color as TermColor;
@@ -13,16 +14,21 @@ use crate::email::send_email;
 use crate::alpha_vantage::alpha_vantage_query;
 use crate::file_edit::file_editor;
 use crate::chat::ChatManager;
-use crate::utils::{confirm, get_opt_bool, get_opt_str};
+use crate::utils::{confirm_with_always, get_opt_bool, get_opt_str};
 use anyhow::{anyhow, Result};
 
-pub fn process_execute_command(args: &Value, debug: bool, allow_commands: bool) -> (String, bool) {
+pub fn process_execute_command(args: &Value, debug: bool, allow_commands: bool, always_approve: &Arc<AtomicBool>) -> (String, bool) {
     let command = args.get("command").and_then(|c| c.as_str());
     if let Some(cmd) = command {
-        let confirmed = if allow_commands {
+        let confirmed = if allow_commands || always_approve.load(Ordering::Relaxed) {
             true
         } else {
-            confirm(&format!("LLM wants to execute command: {} | Confirm?", cmd))
+            let (result, always) = confirm_with_always(&format!("LLM wants to execute command: {} | Confirm?", cmd));
+            if always {
+                always_approve.store(true, Ordering::Relaxed);
+                println!("{}", "Always approve mode enabled. All future commands will be auto-approved for this session.".color(Color::Cyan));
+            }
+            result
         };
         if confirmed {
             println!("Executing command: {}", cmd.color(Color::Magenta));
@@ -189,7 +195,7 @@ fn extract_tool_calls(response: &Value) -> Vec<(String, String, Value)> {
         .collect()
 }
 
-pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool, quiet: bool, allow_commands: bool) -> Result<()> {
+pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool, quiet: bool, allow_commands: bool, always_approve: &Arc<AtomicBool>) -> Result<()> {
     let mut current_response = response.clone();
 
     loop {
@@ -207,7 +213,7 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
         for (tool_call_id, func_name, args) in tool_calls {
             match func_name.as_str() {
                 "execute_command" => {
-                    let (result, rejected) = process_execute_command(&args, debug, allow_commands);
+                    let (result, rejected) = process_execute_command(&args, debug, allow_commands, always_approve);
                     tool_results.push((tool_call_id, result));
                     if rejected { rejection_occurred = true; }
                 }
