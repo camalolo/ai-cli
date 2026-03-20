@@ -1,6 +1,5 @@
 use chrono::Local;
 use anyhow::{anyhow, Result};
-use colored::{Color, Colorize};
 use serde_json::{json, Value};
 use crate::config::Config;
 use spinners::{Spinner, Spinners};
@@ -460,11 +459,7 @@ impl ChatManager {
         unreachable!()
     }
 
-    pub fn cleanup(&mut self, is_signal: bool) {
+    pub fn cleanup(&mut self, _is_signal: bool) {
         self.history.clear();
-        println!("{}", "Shutting down...".color(Color::Cyan));
-        if is_signal {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-        }
     }
 }

@@ -47,7 +47,9 @@ async fn handle_llm_response(
     always_approve: &Arc<AtomicBool>,
 ) -> Result<()> {
     display_response(response);
-    crate::tools::add_block_spacing();
+    if !quiet {
+        crate::tools::add_block_spacing();
+    }
     if process_tools {
         process_tool_calls(response, &chat_manager, debug, quiet, allow_commands, always_approve).await?;
     }
@@ -156,7 +158,6 @@ async fn load_and_display_config(debug: bool) -> Result<Config> {
 
 async fn handle_single_prompt_mode(chat_manager: Arc<Mutex<ChatManager>>, args: &Args, always_approve: &Arc<AtomicBool>) -> Result<()> {
     let prompt = args.prompt.as_ref().unwrap();
-    println!("{}", "Processing single prompt...".color(Color::Cyan));
     let response = match chat_manager.lock().await.send_message(prompt, true, args.debug).await {
         Ok(resp) => {
             if args.debug {

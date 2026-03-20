@@ -1,16 +1,16 @@
+use chrono::Utc;
 use colored::{Color, Colorize};
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;
-use chrono::Utc;
 
 pub fn print_error(message: &str) {
     println!("{}", message.color(Color::Red));
 }
 
 pub fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() > max_len {
-        format!("{}...", &s[..max_len])
+    if s.chars().count() > max_len {
+        format!("{}...", s.chars().take(max_len).collect::<String>())
     } else {
         s.to_string()
     }
@@ -38,7 +38,10 @@ pub fn clear_debug_file(debug: bool) {
 }
 
 pub fn get_opt_str(args: &Value, key: &str, default: &str) -> String {
-    args.get(key).and_then(|v| v.as_str()).unwrap_or(default).to_string()
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or(default)
+        .to_string()
 }
 
 pub fn get_opt_bool(args: &Value, key: &str, default: bool) -> bool {
@@ -59,14 +62,14 @@ pub fn confirm(prompt: &str) -> bool {
 /// - always: true if user selected always (approve all commands for this session)
 pub fn confirm_with_always(prompt: &str) -> (bool, bool) {
     use std::io::{self, Write};
-    
+
     loop {
         print!("{} [y/n/a]: ", prompt);
         io::stdout().flush().unwrap();
-        
+
         let mut input = String::new();
         io::stdin().read_line(&mut input).unwrap();
-        
+
         match input.trim().to_lowercase().as_str() {
             "y" | "yes" => return (true, false),
             "n" | "no" => return (false, false),
