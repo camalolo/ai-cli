@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use build_time::build_time_local;
-use std::process::Command;
+use tokio::process::Command;
 
 mod config;
 use config::Config;
@@ -57,9 +57,18 @@ async fn handle_llm_response(
 }
 
 async fn send_llm_input(chat_manager: Arc<Mutex<ChatManager>>, llm_input: String, args: &Args, always_approve: &Arc<AtomicBool>) -> Result<()> {
-    match chat_manager.lock().await.send_message(&llm_input, false, args.debug).await {
-        Ok(response) => {
-            handle_llm_response(&response, chat_manager.clone(), args.debug, false, false, true, always_approve).await?;
+    // Lock, push user message, extract data, release lock
+    let llm_data = {
+        let mut manager = chat_manager.lock().await;
+        manager.push_user_message(&llm_input, args.debug);
+        manager.prepare_llm_call()
+    };
+    // LLM call without holding the lock
+    match crate::chat::call_llm_api(&llm_data, false, args.debug).await {
+        Ok(llm_result) => {
+            // Re-acquire lock to update history
+            chat_manager.lock().await.apply_llm_result(&llm_result);
+            handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, false, false, true, always_approve).await?;
         },
         Err(e) => print_error(&format!("Error: {}", e)),
     }
@@ -104,31 +113,40 @@ async fn handle_user_input(
     if let Some(command) = user_input.strip_prefix('!') {
         let command: &str = command.trim();
          if command.is_empty() {
-             let output = interactive_shell(args.debug)?;
+             let output = interactive_shell(args.debug).await?;
          let llm_input = format!("User ran interactive shell session with output:\n{}", output);
          send_llm_input(chat_manager.clone(), llm_input, args, always_approve).await?;
          } else {
-            let output = execute_command(command, args.debug).unwrap_or_else(|e| e.to_string());
+            let output = execute_command(command, args.debug).await.unwrap_or_else(|e| e.to_string());
             let llm_input = format!("User ran command '!{}' with output: {}", command, output);
             println!("{}", output);
             send_llm_input(chat_manager.clone(), llm_input, args, always_approve).await?;
          }
      } else {
-        let response = match chat_manager.lock().await.send_message(user_input, false, args.debug).await {
-            Ok(resp) => resp,
-            Err(e) => {
-                println!(
-                    "{}",
-                    format!("Error: A generative AI error occurred: {}", e).color(Color::Red)
-                );
-                return Ok(true);
-            }
-        };
+            // Lock, push user message, extract data, release lock
+            let llm_data = {
+                let mut manager = chat_manager.lock().await;
+                manager.push_user_message(user_input, args.debug);
+                manager.prepare_llm_call()
+            };
+            // LLM call without holding the lock
+            let llm_result = match crate::chat::call_llm_api(&llm_data, false, args.debug).await {
+                Ok(result) => result,
+                Err(e) => {
+                    println!(
+                        "{}",
+                        format!("Error: A generative AI error occurred: {}", e).color(Color::Red)
+                    );
+                    return Ok(true);
+                }
+            };
+            // Re-acquire lock to update history
+            chat_manager.lock().await.apply_llm_result(&llm_result);
 
-        println!(); // Add blank line before response
-        if let Err(e) = handle_llm_response(&response, chat_manager.clone(), args.debug, false, false, true, always_approve).await {
-            print_error(&format!("Error processing tool calls: {}", e));
-        }
+            println!(); // Add blank line before response
+            if let Err(e) = handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, false, false, true, always_approve).await {
+                print_error(&format!("Error processing tool calls: {}", e));
+            }
     }
     Ok(true)
 }
@@ -158,14 +176,21 @@ async fn load_and_display_config(debug: bool) -> Result<Config> {
 
 async fn handle_single_prompt_mode(chat_manager: Arc<Mutex<ChatManager>>, args: &Args, always_approve: &Arc<AtomicBool>) -> Result<()> {
     let prompt = args.prompt.as_ref().unwrap();
-    let response = match chat_manager.lock().await.send_message(prompt, true, args.debug).await {
-        Ok(resp) => {
+    // Lock, push user message, extract data, release lock
+    let llm_data = {
+        let mut manager = chat_manager.lock().await;
+        manager.push_user_message(prompt, args.debug);
+        manager.prepare_llm_call()
+    };
+    // LLM call without holding the lock
+    let llm_result = match crate::chat::call_llm_api(&llm_data, true, args.debug).await {
+        Ok(result) => {
             if args.debug {
                 log_to_file(args.debug, "=== Raw Response ===");
-                log_to_file(args.debug, &format!("{:?}", resp));
+                log_to_file(args.debug, &format!("{:?}", result.response));
                 log_to_file(args.debug, "===================");
             }
-            resp
+            result
         },
         Err(e) => {
             print_error(&format!("Error: {}", e));
@@ -173,7 +198,9 @@ async fn handle_single_prompt_mode(chat_manager: Arc<Mutex<ChatManager>>, args: 
             return Err(e);
         }
     };
-    if let Err(e) = handle_llm_response(&response, chat_manager.clone(), args.debug, true, args.allow_commands, true, always_approve).await {
+    // Re-acquire lock to update history
+    chat_manager.lock().await.apply_llm_result(&llm_result);
+    if let Err(e) = handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, true, args.allow_commands, true, always_approve).await {
         print_error(&format!("Error processing tool calls: {}", e));
     }
     chat_manager.lock().await.cleanup(false);
@@ -223,6 +250,7 @@ async fn run_interactive_loop(chat_manager: Arc<Mutex<ChatManager>>, args: &Args
             cached_git_branch = Command::new("git")
                 .args(["branch", "--show-current"])
                 .output()
+                .await
                 .ok()
                 .and_then(|o| String::from_utf8(o.stdout).ok())
                 .map(|s| s.trim().to_string())

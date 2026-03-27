@@ -61,7 +61,11 @@ pub fn summarize_text(text: &str, num_sentences: usize) -> String {
     let mut summariser = pithy::Summariser::new();
     summariser.add_raw_text("content".to_string(), text.to_string(), ".", 10, 500, false);
     let top_sentences = summariser.approximate_top_sentences(num_sentences, 0.3, 0.1);
-    top_sentences.into_iter().map(|s| s.text).collect::<Vec<_>>().join(" ")
+    top_sentences
+        .into_iter()
+        .map(|s| s.text)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Prompts user with y/n/a options (yes/no/always)
@@ -87,50 +91,6 @@ pub fn confirm_with_always(prompt: &str) -> (bool, bool) {
             }
         }
     }
-}
-
-#[allow(dead_code)]
-pub async fn retry_async<F, Fut, T, E>(
-    max_retries: u32,
-    label: &str,
-    debug: bool,
-    is_retryable: impl Fn(&E) -> bool,
-    f: F,
-) -> Result<T, E>
-where
-    F: Fn(u32) -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
-    E: std::fmt::Display,
-{
-    for attempt in 0..max_retries {
-        if attempt > 0 {
-            let delay = std::time::Duration::from_secs(2u64.pow(attempt - 1));
-            log_to_file(debug, &format!("Retrying {} in {}s (attempt {}/{})", label, delay.as_secs(), attempt + 1, max_retries));
-            tokio::time::sleep(delay).await;
-        }
-        log_to_file(debug, &format!("{} Attempt {}/{}", label, attempt + 1, max_retries));
-
-        let start = std::time::Instant::now();
-        match f(attempt).await {
-            Ok(result) => {
-                log_to_file(debug, &format!("{} Response ({}ms): success", label, start.elapsed().as_millis()));
-                return Ok(result);
-            }
-            Err(e) => {
-                let elapsed = start.elapsed();
-                log_to_file(debug, &format!("{} Error (attempt {}/{} in {}ms): {}", label, attempt + 1, max_retries, elapsed.as_millis(), e));
-                if is_retryable(&e) && attempt < max_retries - 1 {
-                    log_to_file(debug, &format!("Retryable error detected for {}, will retry...", label));
-                } else {
-                    if attempt == max_retries - 1 {
-                        log_to_file(debug, &format!("Max retries reached for {}", label));
-                    }
-                    return Err(e);
-                }
-            }
-        }
-    }
-    unreachable!()
 }
 
 #[cfg(test)]

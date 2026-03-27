@@ -95,7 +95,7 @@ fn detect_unix_shell() -> String {
     }
 }
 
-pub fn interactive_shell(debug: bool) -> Result<String> {
+pub async fn interactive_shell(debug: bool) -> Result<String> {
     println!(
         "{}",
         "Entering interactive shell mode. Type 'exit' to return.".color(Color::Cyan)
@@ -112,7 +112,7 @@ pub fn interactive_shell(debug: bool) -> Result<String> {
                     break;
                 }
                 rl.add_history_entry(input).ok();
-                let output = execute_command(input, debug).unwrap_or_else(|e| e.to_string());
+                let output = execute_command(input, debug).await.unwrap_or_else(|e| e.to_string());
                 println!("{}", output.color(Color::Magenta));
                 accumulated_output.push_str(&format!("Command: {}\nOutput: {}\n\n", input, output));
             }

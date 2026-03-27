@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use chrono::Local;
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
@@ -15,8 +16,128 @@ pub struct ChatManager {
     config: Config,
     history: Vec<Value>,
     system_instruction: String,
-    client: Client<OpenAIConfig>,
+    client: Arc<Client<OpenAIConfig>>,
     tools: Vec<ChatCompletionTool>,
+}
+
+/// Data needed for an LLM API call, extracted from ChatManager.
+/// This allows callers to release the mutex before the potentially long LLM call.
+pub(crate) struct LlmCallData {
+    pub client: Arc<Client<OpenAIConfig>>,
+    pub model: String,
+    pub system_instruction: String,
+    pub history: Vec<Value>,
+    pub tools: Vec<ChatCompletionTool>,
+}
+
+/// Result from an LLM API call, to be applied back to ChatManager.
+pub(crate) struct LlmCallResult {
+    pub response: Value,
+    pub new_messages: Vec<Value>,
+}
+
+/// Performs an LLM API call with retry logic.
+/// This is a free function that doesn't require &mut self, allowing callers
+/// to avoid holding the Mutex across the await.
+pub(crate) async fn call_llm_api(
+    data: &LlmCallData,
+    skip_spinner: bool,
+    debug: bool,
+) -> Result<LlmCallResult> {
+    let mut chat_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
+    chat_messages.push(ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+        content: ChatCompletionRequestSystemMessageContent::Text(data.system_instruction.clone()),
+        name: None,
+    }));
+    for msg in &data.history {
+        let message: ChatCompletionRequestMessage = serde_json::from_value(msg.clone())
+            .map_err(|e| anyhow!("Failed to parse message: {}", e))?;
+        chat_messages.push(message);
+    }
+
+    let request = CreateChatCompletionRequest {
+        model: data.model.clone(),
+        messages: chat_messages,
+        tools: Some(data.tools.clone()),
+        ..Default::default()
+    };
+
+    let spinner = if skip_spinner {
+        None
+    } else {
+        Some(Spinner::new(Spinners::Dots, "".into()))
+    };
+
+    for attempt in 0..3 {
+        if attempt > 0 {
+            let delay = Duration::from_secs(2u64.pow(attempt - 1));
+            crate::utils::log_to_file(debug, &format!("Retrying LLM API call in {}s (attempt {}/{})", delay.as_secs(), attempt + 1, 3));
+            sleep(delay).await;
+        }
+        crate::utils::log_to_file(debug, &format!("LLM API Call Attempt {}/{}", attempt + 1, 3));
+
+        let start_time = std::time::Instant::now();
+        match data.client.chat().create(request.clone()).await {
+            Ok(response) => {
+                let elapsed = start_time.elapsed();
+                crate::utils::log_to_file(debug, &format!("LLM API Response ({}ms): success", elapsed.as_millis()));
+
+                if let Some(mut spinner) = spinner {
+                    spinner.stop();
+                    print!("\r\x1b[2K");
+                }
+
+                let response_json: Value = serde_json::to_value(&response)
+                    .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
+                crate::utils::log_to_file(debug, &format!("LLM Response: {}", crate::utils::truncate_str(&response_json.to_string(), 500)));
+
+                let mut new_messages: Vec<Value> = Vec::new();
+                for choice in &response.choices {
+                    match serde_json::to_value(&choice.message) {
+                        Ok(msg) => new_messages.push(msg),
+                        Err(e) => {
+                            crate::utils::log_to_file(debug, &format!("Warning: failed to serialize choice message: {}", e));
+                        }
+                    }
+                }
+
+                return Ok(LlmCallResult { response: response_json, new_messages });
+            }
+            Err(e) => {
+                let elapsed = start_time.elapsed();
+                let status_code = match &e {
+                    OpenAIError::Reqwest(reqwest_err) => {
+                        reqwest_err.status().map(|s| s.as_u16())
+                    }
+                    _ => None,
+                };
+                crate::utils::log_to_file(debug, &format!("LLM API Error (attempt {}/{} in {}ms): {}", attempt + 1, 3, elapsed.as_millis(), e));
+                let should_retry = match status_code {
+                    Some(429) | Some(502) | Some(503) | Some(504) => true,
+                    Some(code) if code >= 500 => true,
+                    _ => false,
+                };
+                if should_retry && attempt < 2 {
+                    crate::utils::log_to_file(debug, &format!("Retryable error detected (status {:?}), will retry...", status_code));
+                } else {
+                    if attempt == 2 {
+                        crate::utils::log_to_file(debug, "Max retries reached");
+                    }
+                    if let Some(mut spinner) = spinner {
+                        spinner.stop();
+                        print!("\r\x1b[2K");
+                    }
+                    let final_error = if let Some(code) = status_code {
+                        anyhow!("API request failed{}: {} (HTTP {})", if attempt == 2 { " after 3 attempts" } else { "" }, e, code)
+                    } else {
+                        anyhow!("API request failed{}: {}", if attempt == 2 { " after 3 attempts" } else { "" }, e)
+                    };
+                    return Err(final_error);
+                }
+            }
+        }
+    }
+    unreachable!()
 }
 
 impl ChatManager {
@@ -36,6 +157,50 @@ impl ChatManager {
         &self.history
     }
 
+    /// Push a user message to history.
+    pub fn push_user_message(&mut self, message: &str, debug: bool) {
+        let user_message = json!({
+            "role": "user",
+            "content": message
+        });
+        self.history.push(user_message);
+        crate::utils::log_to_file(debug, &format!("LLM Query: {}", crate::utils::truncate_str(message, 200)));
+    }
+
+    /// Push tool result messages to history and trim.
+    pub fn push_tool_results_to_history(&mut self, tool_results: &[(String, String)], debug: bool) {
+        for (tool_call_id, result) in tool_results {
+            let tool_message = json!({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": result
+            });
+            self.history.push(tool_message);
+            crate::utils::log_to_file(debug, &format!("Tool result for {}: {}", tool_call_id, crate::utils::truncate_str(result, 200)));
+        }
+        self.trim_history();
+    }
+
+    /// Extract data needed for an LLM call. The caller can release the lock
+    /// before calling `call_llm_api`.
+    pub fn prepare_llm_call(&self) -> LlmCallData {
+        LlmCallData {
+            client: Arc::clone(&self.client),
+            model: self.config.model.clone(),
+            system_instruction: self.system_instruction.clone(),
+            history: self.history.clone(),
+            tools: self.tools.clone(),
+        }
+    }
+
+    /// Apply LLM call results (new messages) back to history.
+    pub fn apply_llm_result(&mut self, result: &LlmCallResult) {
+        for msg in &result.new_messages {
+            self.history.push(msg.clone());
+        }
+        self.trim_history();
+    }
+
     fn build_system_instruction() -> String {
         let today = Local::now().format("%Y-%m-%d").to_string();
         let os_name = if cfg!(target_os = "windows") {
@@ -51,7 +216,7 @@ impl ChatManager {
         let shell_info = crate::shell::detect_shell_info();
 
         format!(
-            "Today's date is {}. You are a proactive assistant running in a sandboxed {} terminal environment with a full set of command line utilities. The default shell is {}. Your role is to assist with coding tasks, file operations, online searches, email sending, and shell commands efficiently and decisively. Assume the current directory (the sandbox root) is the target for all commands. Take initiative to provide solutions, execute commands, and analyze results immediately without asking for confirmation unless the action is explicitly ambiguous (e.g., multiple repos) or potentially destructive (e.g., deleting files). Use the `execute_command` tool to interact with the system but only when needed. Deliver concise, clear responses. After running a command, always summarize its output immediately and proceed with logical next steps, without waiting for the user to prompt you further. Stay within the sandbox directory. Users can run shell commands directly with `!`, and you'll receive the output to assist further. Act confidently and anticipate the user's needs to streamline their workflow. You may use md formatting to provide a more readable response. When using search tools, prioritize concise modes ('basic') to maintain efficiency unless the query requires depth.",
+            "Today's date is {}. You are a proactive assistant running in a sandboxed {} terminal environment (network access is disabled for commands) with a full set of command line utilities. The default shell is {}. Your role is to assist with coding tasks, file operations, online searches, email sending, and shell commands efficiently and decisively. Assume the current directory (the sandbox root) is the target for all commands. Take initiative to provide solutions, execute commands, and analyze results immediately without asking for confirmation unless the action is explicitly ambiguous (e.g., multiple repos) or potentially destructive (e.g., deleting files). Use the `execute_command` tool to interact with the system but only when needed. Deliver concise, clear responses. After running a command, always summarize its output immediately and proceed with logical next steps, without waiting for the user to prompt you further. Stay within the sandbox directory. Users can run shell commands directly with `!`, and you'll receive the output to assist further. Act confidently and anticipate the user's needs to streamline their workflow. You may use md formatting to provide a more readable response. When using search tools, prioritize concise modes ('basic') to maintain efficiency unless the query requires depth.",
             today, os_name, shell_info
         )
     }
@@ -60,7 +225,7 @@ impl ChatManager {
         let openai_config = OpenAIConfig::new()
             .with_api_key(config.api_key.clone())
             .with_api_base(format!("{}/{}", config.api_base_url, config.api_version));
-        let client = Client::with_config(openai_config);
+        let client = Arc::new(Client::with_config(openai_config));
         let tools = Self::build_tools();
         ChatManager {
             config,
@@ -198,128 +363,6 @@ impl ChatManager {
             let excess = self.history.len() - MAX_HISTORY_SIZE;
             self.history.drain(..excess);
         }
-    }
-
-    async fn call_llm(
-        &mut self,
-        skip_spinner: bool,
-        debug: bool,
-    ) -> Result<Value> {
-        let mut chat_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
-        chat_messages.push(ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
-            content: ChatCompletionRequestSystemMessageContent::Text(self.system_instruction.clone()),
-            name: None,
-        }));
-        for msg in &self.history {
-            let message: ChatCompletionRequestMessage = serde_json::from_value(msg.clone())
-                .map_err(|e| anyhow!("Failed to parse message: {}", e))?;
-            chat_messages.push(message);
-        }
-
-        let request = CreateChatCompletionRequest {
-            model: self.config.model.clone(),
-            messages: chat_messages,
-            tools: Some(self.tools.clone()),
-            ..Default::default()
-        };
-
-        let spinner = if skip_spinner {
-            None
-        } else {
-            Some(Spinner::new(Spinners::Dots, "".into()))
-        };
-
-        let client = &self.client;
-
-        for attempt in 0..3 {
-            if attempt > 0 {
-                let delay = Duration::from_secs(2u64.pow(attempt - 1));
-                crate::utils::log_to_file(debug, &format!("Retrying LLM API call in {}s (attempt {}/{})", delay.as_secs(), attempt + 1, 3));
-                sleep(delay).await;
-            }
-            crate::utils::log_to_file(debug, &format!("LLM API Call Attempt {}/{}", attempt + 1, 3));
-
-            let start_time = std::time::Instant::now();
-            match client.chat().create(request.clone()).await {
-                Ok(response) => {
-                    let elapsed = start_time.elapsed();
-                    crate::utils::log_to_file(debug, &format!("LLM API Response ({}ms): success", elapsed.as_millis()));
-
-                    if let Some(mut spinner) = spinner {
-                        spinner.stop();
-                        print!("\r\x1b[2K");
-                    }
-
-                    let response_json: Value = serde_json::to_value(&response)
-                        .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
-                    crate::utils::log_to_file(debug, &format!("LLM Response: {}", crate::utils::truncate_str(&response_json.to_string(), 500)));
-
-                    for choice in &response.choices {
-                        self.history.push(serde_json::to_value(&choice.message)
-                            .map_err(|e| anyhow!("Failed to serialize message: {}", e))?);
-                    }
-                    self.trim_history();
-                    return Ok(response_json);
-                }
-                Err(e) => {
-                    let elapsed = start_time.elapsed();
-                    let status_code = match &e {
-                        OpenAIError::Reqwest(reqwest_err) => {
-                            reqwest_err.status().map(|s| s.as_u16())
-                        }
-                        _ => None,
-                    };
-                    crate::utils::log_to_file(debug, &format!("LLM API Error (attempt {}/{} in {}ms): {}", attempt + 1, 3, elapsed.as_millis(), e));
-                    let should_retry = match status_code {
-                        Some(429) | Some(502) | Some(503) | Some(504) => true,
-                        Some(code) if code >= 500 => true,
-                        _ => false,
-                    };
-                    if should_retry && attempt < 2 {
-                        crate::utils::log_to_file(debug, &format!("Retryable error detected (status {:?}), will retry...", status_code));
-                    } else {
-                        if attempt == 2 {
-                            crate::utils::log_to_file(debug, "Max retries reached");
-                        }
-                        if let Some(mut spinner) = spinner {
-                            spinner.stop();
-                            print!("\r\x1b[2K");
-                        }
-                        let final_error = if let Some(code) = status_code {
-                            anyhow!("API request failed{}: {} (HTTP {})", if attempt == 2 { " after 3 attempts" } else { "" }, e, code)
-                        } else {
-                            anyhow!("API request failed{}: {}", if attempt == 2 { " after 3 attempts" } else { "" }, e)
-                        };
-                        return Err(final_error);
-                    }
-                }
-            }
-        }
-        unreachable!()
-    }
-
-    pub async fn send_message(&mut self, message: &str, skip_spinner: bool, debug: bool) -> Result<Value> {
-        let user_message = json!({
-            "role": "user",
-            "content": message
-        });
-        self.history.push(user_message);
-        crate::utils::log_to_file(debug, &format!("LLM Query: {}", crate::utils::truncate_str(message, 200)));
-        self.call_llm(skip_spinner, debug).await
-    }
-
-    pub async fn send_tool_results(&mut self, tool_results: Vec<(String, String)>, skip_spinner: bool, debug: bool) -> Result<Value> {
-        for (tool_call_id, result) in tool_results {
-            let tool_message = json!({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": result
-            });
-            self.history.push(tool_message);
-            crate::utils::log_to_file(debug, &format!("Tool result for {}: {}", tool_call_id, crate::utils::truncate_str(&result, 200)));
-        }
-        self.trim_history();
-        self.call_llm(skip_spinner, debug).await
     }
 
     pub fn cleanup(&mut self, _is_signal: bool) {

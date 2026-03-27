@@ -9,6 +9,9 @@ use anyhow::Result;
 
 use crate::patch::apply_patch;
 
+/// Maximum allowed file size for read/write operations (10 MB)
+const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
 const CANCELLATION_MESSAGE: &str = "User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.";
 
 pub(crate) fn resolve_sandbox_path(filename: &str) -> Result<PathBuf, String> {
@@ -71,6 +74,26 @@ fn confirm_and_apply_change(
 }
 
 fn handle_read(file_path: &PathBuf, filename: &str) -> (String, bool) {
+    match fs::metadata(file_path) {
+        Ok(metadata) if metadata.len() > MAX_FILE_SIZE => {
+            return (
+                format!(
+                    "Error: File '{}' is too large ({} bytes, max is {} bytes)",
+                    filename,
+                    metadata.len(),
+                    MAX_FILE_SIZE
+                ),
+                false,
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return (
+                format!("Error reading file metadata '{}': {}", filename, e),
+                false,
+            )
+        }
+    }
     match fs::read_to_string(file_path) {
         Ok(content) => (format!("File contents:\n{}", content), false),
         Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
@@ -84,6 +107,16 @@ fn handle_write(
     skip_confirmation: bool,
 ) -> (String, bool) {
     let new_content = data.unwrap_or("");
+    let content_size = new_content.len() as u64;
+    if content_size > MAX_FILE_SIZE {
+        return (
+            format!(
+                "Error: Content too large ({} bytes, max is {} bytes)",
+                content_size, MAX_FILE_SIZE
+            ),
+            false,
+        );
+    }
     let current_content = fs::read_to_string(file_path).unwrap_or_default();
     if let Err(msg) = confirm_and_apply_change(
         &current_content,
@@ -112,36 +145,58 @@ fn handle_search(file_path: &PathBuf, filename: &str, data: Option<&str>) -> (St
         }
     };
     match Regex::new(pattern) {
-        Ok(re) => match fs::read_to_string(file_path) {
-            Ok(content) => {
-                let matches: Vec<_> = re.find_iter(&content).collect();
-                if matches.is_empty() {
-                    (
+        Ok(re) => {
+            match fs::metadata(file_path) {
+                Ok(metadata) if metadata.len() > MAX_FILE_SIZE => {
+                    return (
                         format!(
-                            "No matches found for pattern '{}' in '{}'",
-                            pattern, filename
+                            "Error: File '{}' is too large ({} bytes, max is {} bytes)",
+                            filename,
+                            metadata.len(),
+                            MAX_FILE_SIZE
                         ),
                         false,
-                    )
-                } else {
-                    let match_list: Vec<String> = matches
-                        .iter()
-                        .map(|m| format!(" - {} (at position {})", m.as_str(), m.start()))
-                        .collect();
-                    (
-                        format!(
-                            "Found {} matches for pattern '{}' in '{}':\n{}",
-                            matches.len(),
-                            pattern,
-                            filename,
-                            match_list.join("\n")
-                        ),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    return (
+                        format!("Error reading file metadata '{}': {}", filename, e),
                         false,
                     )
                 }
             }
-            Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
-        },
+            match fs::read_to_string(file_path) {
+                Ok(content) => {
+                    let matches: Vec<_> = re.find_iter(&content).collect();
+                    if matches.is_empty() {
+                        (
+                            format!(
+                                "No matches found for pattern '{}' in '{}'",
+                                pattern, filename
+                            ),
+                            false,
+                        )
+                    } else {
+                        let match_list: Vec<String> = matches
+                            .iter()
+                            .map(|m| format!(" - {} (at position {})", m.as_str(), m.start()))
+                            .collect();
+                        (
+                            format!(
+                                "Found {} matches for pattern '{}' in '{}':\n{}",
+                                matches.len(),
+                                pattern,
+                                filename,
+                                match_list.join("\n")
+                            ),
+                            false,
+                        )
+                    }
+                }
+                Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
+            }
+        }
         Err(e) => (
             format!("Error compiling regex pattern '{}': {}", pattern, e),
             false,
@@ -175,33 +230,75 @@ fn handle_search_and_replace(
             );
         }
     };
+    let replace_size = replace_with.len() as u64;
+    if replace_size > MAX_FILE_SIZE {
+        return (
+            format!(
+                "Error: Replacement text too large ({} bytes, max is {} bytes)",
+                replace_size, MAX_FILE_SIZE
+            ),
+            false,
+        );
+    }
     match Regex::new(pattern) {
-        Ok(re) => match fs::read_to_string(file_path) {
-            Ok(content) => {
-                let new_content = re.replace_all(&content, replace_with);
-                if let Err(msg) = confirm_and_apply_change(
-                    &content,
-                    &new_content,
-                    filename,
-                    "search and replace in",
-                    skip_confirmation,
-                ) {
-                    let is_cancel = msg == CANCELLATION_MESSAGE;
-                    return (msg, is_cancel);
-                }
-                match fs::write(file_path, new_content.as_ref()) {
-                    Ok(()) => (
+        Ok(re) => {
+            match fs::metadata(file_path) {
+                Ok(metadata) if metadata.len() > MAX_FILE_SIZE => {
+                    return (
                         format!(
-                            "Successfully replaced pattern '{}' with '{}' in '{}'",
-                            pattern, replace_with, filename
+                            "Error: File '{}' is too large ({} bytes, max is {} bytes)",
+                            filename,
+                            metadata.len(),
+                            MAX_FILE_SIZE
                         ),
                         false,
-                    ),
-                    Err(e) => (format!("Error writing to '{}': {}", filename, e), false),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    return (
+                        format!("Error reading file metadata '{}': {}", filename, e),
+                        false,
+                    )
                 }
             }
-            Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
-        },
+            match fs::read_to_string(file_path) {
+                Ok(content) => {
+                    let new_content = re.replace_all(&content, replace_with);
+                    if let Err(msg) = confirm_and_apply_change(
+                        &content,
+                        &new_content,
+                        filename,
+                        "search and replace in",
+                        skip_confirmation,
+                    ) {
+                        let is_cancel = msg == CANCELLATION_MESSAGE;
+                        return (msg, is_cancel);
+                    }
+                    let result_size = new_content.len() as u64;
+                    if result_size > MAX_FILE_SIZE {
+                        return (
+                            format!(
+                                "Error: Resulting content too large ({} bytes, max is {} bytes)",
+                                result_size, MAX_FILE_SIZE
+                            ),
+                            false,
+                        );
+                    }
+                    match fs::write(file_path, new_content.as_ref()) {
+                        Ok(()) => (
+                            format!(
+                                "Successfully replaced pattern '{}' with '{}' in '{}'",
+                                pattern, replace_with, filename
+                            ),
+                            false,
+                        ),
+                        Err(e) => (format!("Error writing to '{}': {}", filename, e), false),
+                    }
+                }
+                Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
+            }
+        }
         Err(e) => (
             format!("Error compiling regex pattern '{}': {}", pattern, e),
             false,
@@ -326,5 +423,137 @@ mod tests {
     fn test_accept_subdirectory() {
         let result = resolve_sandbox_path("Cargo.toml");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_max_file_size_constant() {
+        assert_eq!(MAX_FILE_SIZE, 10 * 1024 * 1024);
+    }
+
+    // --- Integration-style tests with real filesystem ---
+
+    #[test]
+    fn test_integration_path_traversal_parent_dir_blocked() {
+        let (result, rejected) = file_editor("read", "../../etc/passwd", None, None, true, false);
+        assert!(
+            result.contains("traversal") || result.contains("denied"),
+            "Expected traversal/denied error, got: {}",
+            result
+        );
+        assert!(!rejected);
+    }
+
+    #[test]
+    fn test_integration_path_traversal_nested_blocked() {
+        let (result, _) = file_editor("read", "foo/../../etc/shadow", None, None, true, false);
+        assert!(
+            result.contains("traversal") || result.contains("denied"),
+            "Expected traversal/denied error, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_integration_absolute_path_blocked() {
+        let (result, _) = file_editor("read", "/etc/passwd", None, None, true, false);
+        assert!(
+            result.contains("traversal")
+                || result.contains("denied")
+                || result.contains("outside sandbox"),
+            "Expected access denied error, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_integration_read_existing_file() {
+        let test_file = "test_integration_read_existing.tmp";
+        fs::write(test_file, "hello integration test").unwrap();
+        let (result, rejected) = file_editor("read", test_file, None, None, true, false);
+        let _ = fs::remove_file(test_file);
+        assert!(!rejected);
+        assert!(result.contains("hello integration test"));
+    }
+
+    #[test]
+    fn test_integration_write_and_read_back() {
+        let test_file = "test_integration_write_read.tmp";
+        fs::write(test_file, "").unwrap();
+        let (result, rejected) = file_editor(
+            "write",
+            test_file,
+            Some("integration write content"),
+            None,
+            true,
+            false,
+        );
+        assert!(!rejected);
+        assert!(result.contains("Successfully wrote"));
+        let content = fs::read_to_string(test_file).unwrap();
+        assert_eq!(content, "integration write content");
+        let _ = fs::remove_file(test_file);
+    }
+
+    #[test]
+    fn test_integration_search_in_file() {
+        let test_file = "test_integration_search.tmp";
+        fs::write(test_file, "line one\nline two\nline three").unwrap();
+        let (result, _) = file_editor("search", test_file, Some("line two"), None, true, false);
+        let _ = fs::remove_file(test_file);
+        assert!(result.contains("Found 1 match"));
+    }
+
+    #[test]
+    fn test_integration_read_nonexistent_file() {
+        let (result, _) = file_editor(
+            "read",
+            "nonexistent_integration_test_xyz.tmp",
+            None,
+            None,
+            true,
+            false,
+        );
+        assert!(
+            result.contains("Failed to resolve") || result.contains("Error"),
+            "Expected error for nonexistent file, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_integration_create_subdirectory_and_write() {
+        let test_dir = "test_integration_subdir";
+        let test_file = "test_integration_subdir/nested_file.tmp";
+        let _ = fs::remove_dir_all(test_dir);
+        fs::create_dir_all(test_dir).unwrap();
+        fs::write(test_file, "").unwrap();
+        let (result, rejected) = file_editor(
+            "write",
+            test_file,
+            Some("nested content"),
+            None,
+            true,
+            false,
+        );
+        assert!(!rejected);
+        assert!(result.contains("Successfully wrote"));
+        let content = fs::read_to_string(test_file).unwrap();
+        assert_eq!(content, "nested content");
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_integration_symlink_to_sandbox_file() {
+        let target_file = "test_symlink_target.tmp";
+        let link_file = "test_symlink_link.tmp";
+        fs::write(target_file, "symlink target content").unwrap();
+        let _ = fs::remove_file(link_file);
+        use std::os::unix::fs::symlink;
+        symlink(target_file, link_file).unwrap();
+        let (result, _) = file_editor("read", link_file, None, None, true, false);
+        let _ = fs::remove_file(link_file);
+        let _ = fs::remove_file(target_file);
+        assert!(result.contains("symlink target content"));
     }
 }

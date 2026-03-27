@@ -22,7 +22,7 @@ static MULTI_NEWLINE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\n{3,}").unwrap()
 });
 
-pub fn process_execute_command(args: &Value, debug: bool, allow_commands: bool, always_approve: &Arc<AtomicBool>) -> (String, bool) {
+pub async fn process_execute_command(args: &Value, debug: bool, allow_commands: bool, always_approve: &Arc<AtomicBool>) -> (String, bool) {
     let command = args.get("command").and_then(|c| c.as_str());
     if let Some(cmd) = command {
         let confirmed = if allow_commands || always_approve.load(Ordering::Relaxed) {
@@ -37,7 +37,7 @@ pub fn process_execute_command(args: &Value, debug: bool, allow_commands: bool, 
         };
         if confirmed {
             println!("Executing command: {}", cmd.color(Color::Magenta));
-            let result = execute_command(cmd, debug).unwrap_or_else(|e| e.to_string());
+            let result = execute_command(cmd, debug).await.unwrap_or_else(|e| e.to_string());
             println!();
             (tool_result("execute_command", &result), false)
         } else {
@@ -71,9 +71,11 @@ pub async fn process_send_email(args: &Value, chat_manager: &Arc<Mutex<ChatManag
     let body = args.get("body").and_then(|b| b.as_str());
 
     if let (Some(subj), Some(bod)) = (subject, body) {
-        let manager = chat_manager.lock().await;
-        let config = manager.get_config();
-        match send_email(subj, bod, config, debug).await {
+        let config = {
+            let manager = chat_manager.lock().await;
+            manager.get_config().clone()
+        };
+        match send_email(subj, bod, &config, debug).await {
             Ok(msg) => (tool_result("send_email", &msg), false),
             Err(e) => (tool_error("send_email", &e.to_string()), false),
         }
@@ -241,7 +243,7 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
         for (tool_call_id, func_name, args) in tool_calls {
             match func_name.as_str() {
                 "execute_command" => {
-                    let (result, rejected) = process_execute_command(&args, debug, allow_commands, always_approve);
+                    let (result, rejected) = process_execute_command(&args, debug, allow_commands, always_approve).await;
                     tool_results.push((tool_call_id, result));
                     if rejected { rejection_occurred = true; }
                 }
@@ -320,7 +322,20 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
         }
 
         if !tool_results.is_empty() {
-            current_response = chat_manager.lock().await.send_tool_results(tool_results, quiet, debug).await?;
+            // Push tool results to history while locked, extract LLM call data, release lock
+            let llm_data = {
+                let mut manager = chat_manager.lock().await;
+                manager.push_tool_results_to_history(&tool_results, debug);
+                manager.prepare_llm_call()
+            };
+            // LLM call WITHOUT holding the mutex
+            let llm_result = crate::chat::call_llm_api(&llm_data, quiet, debug).await?;
+            // Re-acquire lock to update history
+            {
+                let mut manager = chat_manager.lock().await;
+                manager.apply_llm_result(&llm_result);
+            }
+            current_response = llm_result.response;
             display_response(&current_response);
             add_block_spacing();
             if rejection_occurred {
