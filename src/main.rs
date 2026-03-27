@@ -19,6 +19,7 @@ mod tools;
 mod search;
 mod scrape;
 
+mod tui;
 mod patch;
 mod command;
 mod email;
@@ -322,6 +323,10 @@ struct Args {
     /// Allow LLM to execute commands without user confirmation in single prompt mode
     #[arg(long)]
     allow_commands: bool,
+
+    /// Use the old REPL interface instead of the TUI
+    #[arg(long)]
+    no_tui: bool,
 }
 
 #[tokio::main]
@@ -342,7 +347,11 @@ async fn main() -> Result<(), anyhow::Error> {
         return Ok(());
     }
 
-    run_interactive_loop(chat_manager, &args, &always_approve).await?;
+    if args.no_tui {
+        run_interactive_loop(chat_manager, &args, &always_approve).await?;
+    } else {
+        crate::tui::run_tui(chat_manager.clone(), args.debug, always_approve).await?;
+    }
 
     Ok(())
 }
