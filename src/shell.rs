@@ -1,13 +1,22 @@
+use crate::command::execute_command;
+use anyhow::Result;
 use colored::{Color, Colorize};
 use rustyline::DefaultEditor;
 use std::env;
 use std::process::Command;
-use crate::command::execute_command;
 
 fn get_version_line(cmd: &str, args: &[&str]) -> Option<String> {
-    Command::new(cmd).args(args).output().ok()
+    Command::new(cmd)
+        .args(args)
+        .output()
+        .ok()
         .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8_lossy(&output.stdout).lines().next().map(|s| s.to_string()))
+        .and_then(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .map(|s| s.to_string())
+        })
 }
 
 pub fn detect_shell_info() -> String {
@@ -53,7 +62,10 @@ fn detect_windows_shell() -> String {
     if let Ok(powershell_path) = env::var("PSModulePath") {
         if !powershell_path.is_empty() {
             // Try to get PowerShell version
-            if let Some(version) = get_version_line("powershell", &["-Command", "$PSVersionTable.PSVersion.ToString()"]) {
+            if let Some(version) = get_version_line(
+                "powershell",
+                &["-Command", "$PSVersionTable.PSVersion.ToString()"],
+            ) {
                 return format!("PowerShell {}", version.trim());
             }
             return "PowerShell".to_string();
@@ -83,10 +95,14 @@ fn detect_unix_shell() -> String {
     }
 }
 
-pub fn interactive_shell(debug: bool) -> String {
-    println!("{}", "Entering interactive shell mode. Type 'exit' to return.".color(Color::Cyan));
+pub fn interactive_shell(debug: bool) -> Result<String> {
+    println!(
+        "{}",
+        "Entering interactive shell mode. Type 'exit' to return.".color(Color::Cyan)
+    );
     let mut accumulated_output = String::new();
-    let mut rl = DefaultEditor::new().expect("Failed to create editor");
+    let mut rl =
+        DefaultEditor::new().map_err(|e| anyhow::anyhow!("Failed to create editor: {}", e))?;
     loop {
         let readline = rl.readline("shell> ");
         match readline {
@@ -104,5 +120,5 @@ pub fn interactive_shell(debug: bool) -> String {
         }
     }
     println!("{}", "Exiting interactive shell mode.".color(Color::Cyan));
-    accumulated_output
+    Ok(accumulated_output)
 }

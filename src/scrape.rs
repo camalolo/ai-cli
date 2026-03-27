@@ -54,7 +54,7 @@ pub async fn scrape_url(url: &str, mode: &str, debug: bool) -> Result<String> {
         result
     } else {
         crate::utils::log_to_file(debug, &format!("Summarizing content from {} chars", result.len()));
-        let summary = crate::tools::summarize_text(&result, 3);
+        let summary = crate::utils::summarize_text(&result, 3);
         if summary.is_empty() {
             result // fallback to full content if summarization fails
         } else {

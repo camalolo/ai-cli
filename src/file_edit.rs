@@ -1,7 +1,7 @@
+use difference::{Changeset, Difference};
 use regex::Regex;
 use std::fs;
 use std::path::PathBuf;
-use difference::{Changeset, Difference};
 
 use crate::sandbox::get_sandbox_root;
 use crate::utils::confirm;
@@ -11,7 +11,36 @@ use crate::patch::apply_patch;
 
 const CANCELLATION_MESSAGE: &str = "User has cancelled this operation because it is against their wishes. Do not attempt any alternative approaches or modifications. Wait for further instructions.";
 
-fn confirm_change(original: &str, new_content: &str, filename: &str, operation_desc: &str) -> Result<bool> {
+pub(crate) fn resolve_sandbox_path(filename: &str) -> Result<PathBuf, String> {
+    if std::path::Path::new(filename)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(
+            "Path traversal detected: filename must not contain '..' components".to_string(),
+        );
+    }
+
+    let joined = PathBuf::from(get_sandbox_root()).join(filename);
+    let canonicalized = dunce::canonicalize(&joined)
+        .map_err(|e| format!("Failed to resolve path '{}': {}", filename, e))?;
+
+    let sandbox_root = dunce::canonicalize(get_sandbox_root())
+        .map_err(|e| format!("Failed to resolve sandbox root: {}", e))?;
+
+    if !canonicalized.starts_with(&sandbox_root) {
+        return Err("Access denied: path resolves outside sandbox".to_string());
+    }
+
+    Ok(canonicalized)
+}
+
+fn confirm_change(
+    original: &str,
+    new_content: &str,
+    filename: &str,
+    operation_desc: &str,
+) -> Result<bool> {
     let changeset = Changeset::new(original, new_content, "\n");
     println!("Diff preview for {} in '{}':", operation_desc, filename);
     for diff in &changeset.diffs {
@@ -24,7 +53,13 @@ fn confirm_change(original: &str, new_content: &str, filename: &str, operation_d
     Ok(confirm("Apply changes?"))
 }
 
-fn confirm_and_apply_change(old_content: &str, new_content: &str, filename: &str, operation_desc: &str, skip_confirmation: bool) -> Result<(), String> {
+fn confirm_and_apply_change(
+    old_content: &str,
+    new_content: &str,
+    filename: &str,
+    operation_desc: &str,
+    skip_confirmation: bool,
+) -> Result<(), String> {
     if skip_confirmation {
         return Ok(());
     }
@@ -42,10 +77,21 @@ fn handle_read(file_path: &PathBuf, filename: &str) -> (String, bool) {
     }
 }
 
-fn handle_write(file_path: &PathBuf, filename: &str, data: Option<&str>, skip_confirmation: bool) -> (String, bool) {
+fn handle_write(
+    file_path: &PathBuf,
+    filename: &str,
+    data: Option<&str>,
+    skip_confirmation: bool,
+) -> (String, bool) {
     let new_content = data.unwrap_or("");
     let current_content = fs::read_to_string(file_path).unwrap_or_default();
-    if let Err(msg) = confirm_and_apply_change(&current_content, new_content, filename, "writing to", skip_confirmation) {
+    if let Err(msg) = confirm_and_apply_change(
+        &current_content,
+        new_content,
+        filename,
+        "writing to",
+        skip_confirmation,
+    ) {
         let is_cancel = msg == CANCELLATION_MESSAGE;
         return (msg, is_cancel);
     }
@@ -59,7 +105,10 @@ fn handle_search(file_path: &PathBuf, filename: &str, data: Option<&str>) -> (St
     let pattern = match data {
         Some(p) => p,
         None => {
-            return ("Error: 'data' parameter with regex pattern is required for search".to_string(), false);
+            return (
+                "Error: 'data' parameter with regex pattern is required for search".to_string(),
+                false,
+            );
         }
     };
     match Regex::new(pattern) {
@@ -67,84 +116,138 @@ fn handle_search(file_path: &PathBuf, filename: &str, data: Option<&str>) -> (St
             Ok(content) => {
                 let matches: Vec<_> = re.find_iter(&content).collect();
                 if matches.is_empty() {
-                    (format!("No matches found for pattern '{}' in '{}'", pattern, filename), false)
+                    (
+                        format!(
+                            "No matches found for pattern '{}' in '{}'",
+                            pattern, filename
+                        ),
+                        false,
+                    )
                 } else {
                     let match_list: Vec<String> = matches
                         .iter()
                         .map(|m| format!(" - {} (at position {})", m.as_str(), m.start()))
                         .collect();
-                    (format!(
-                        "Found {} matches for pattern '{}' in '{}':\n{}",
-                        matches.len(),
-                        pattern,
-                        filename,
-                        match_list.join("\n")
-                    ), false)
+                    (
+                        format!(
+                            "Found {} matches for pattern '{}' in '{}':\n{}",
+                            matches.len(),
+                            pattern,
+                            filename,
+                            match_list.join("\n")
+                        ),
+                        false,
+                    )
                 }
             }
             Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
         },
-        Err(e) => (format!("Error compiling regex pattern '{}': {}", pattern, e), false),
+        Err(e) => (
+            format!("Error compiling regex pattern '{}': {}", pattern, e),
+            false,
+        ),
     }
 }
 
-fn handle_search_and_replace(file_path: &PathBuf, filename: &str, data: Option<&str>, replacement: Option<&str>, skip_confirmation: bool) -> (String, bool) {
+fn handle_search_and_replace(
+    file_path: &PathBuf,
+    filename: &str,
+    data: Option<&str>,
+    replacement: Option<&str>,
+    skip_confirmation: bool,
+) -> (String, bool) {
     let pattern = match data {
         Some(p) => p,
-        None => return ("Error: 'data' parameter with regex pattern is required for search_and_replace".to_string(), false),
+        None => {
+            return (
+                "Error: 'data' parameter with regex pattern is required for search_and_replace"
+                    .to_string(),
+                false,
+            )
+        }
     };
     let replace_with = match replacement {
         Some(r) => r,
         None => {
-            return ("Error: 'replacement' parameter is required for search_and_replace".to_string(), false);
+            return (
+                "Error: 'replacement' parameter is required for search_and_replace".to_string(),
+                false,
+            );
         }
     };
     match Regex::new(pattern) {
         Ok(re) => match fs::read_to_string(file_path) {
             Ok(content) => {
                 let new_content = re.replace_all(&content, replace_with);
-                if let Err(msg) = confirm_and_apply_change(&content, &new_content, filename, "search and replace in", skip_confirmation) {
+                if let Err(msg) = confirm_and_apply_change(
+                    &content,
+                    &new_content,
+                    filename,
+                    "search and replace in",
+                    skip_confirmation,
+                ) {
                     let is_cancel = msg == CANCELLATION_MESSAGE;
                     return (msg, is_cancel);
                 }
                 match fs::write(file_path, new_content.as_ref()) {
-                    Ok(()) => (format!(
-                        "Successfully replaced pattern '{}' with '{}' in '{}'",
-                        pattern, replace_with, filename
-                    ), false),
+                    Ok(()) => (
+                        format!(
+                            "Successfully replaced pattern '{}' with '{}' in '{}'",
+                            pattern, replace_with, filename
+                        ),
+                        false,
+                    ),
                     Err(e) => (format!("Error writing to '{}': {}", filename, e), false),
                 }
             }
             Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
         },
-        Err(e) => (format!("Error compiling regex pattern '{}': {}", pattern, e), false),
+        Err(e) => (
+            format!("Error compiling regex pattern '{}': {}", pattern, e),
+            false,
+        ),
     }
 }
 
-fn handle_apply_diff(file_path: &PathBuf, filename: &str, data: Option<&str>, skip_confirmation: bool) -> (String, bool) {
+fn handle_apply_diff(
+    file_path: &PathBuf,
+    filename: &str,
+    data: Option<&str>,
+    skip_confirmation: bool,
+) -> (String, bool) {
     let diff_content = match data {
         Some(d) => d,
         None => {
-            return ("Error: 'data' parameter with diff content is required for apply_diff".to_string(), false);
+            return (
+                "Error: 'data' parameter with diff content is required for apply_diff".to_string(),
+                false,
+            );
         }
     };
 
     match fs::read_to_string(file_path) {
-        Ok(original_content) => {
-            match apply_patch(&original_content, diff_content) {
-                Ok(new_content) => {
-                    if let Err(msg) = confirm_and_apply_change(&original_content, &new_content, filename, "applying diff to", skip_confirmation) {
-                        let is_cancel = msg == CANCELLATION_MESSAGE;
-                        return (msg, is_cancel);
-                    }
-                    match fs::write(file_path, &new_content) {
-                        Ok(()) => (format!("Successfully applied diff to '{}'", filename), false),
-                        Err(e) => (format!("Error writing to '{}': {}", filename, e), false),
-                    }
-                },
-                Err(e) => (format!("Error parsing or applying diff: {}", e), false),
+        Ok(original_content) => match apply_patch(&original_content, diff_content) {
+            Ok(new_content) => {
+                if let Err(msg) = confirm_and_apply_change(
+                    &original_content,
+                    &new_content,
+                    filename,
+                    "applying diff to",
+                    skip_confirmation,
+                ) {
+                    let is_cancel = msg == CANCELLATION_MESSAGE;
+                    return (msg, is_cancel);
+                }
+                match fs::write(file_path, &new_content) {
+                    Ok(()) => (
+                        format!("Successfully applied diff to '{}'", filename),
+                        false,
+                    ),
+                    Err(e) => (format!("Error writing to '{}': {}", filename, e), false),
+                }
             }
-        }
+            Err(e) => (format!("Error parsing or applying diff: {}", e), false),
+        },
         Err(e) => (format!("Error reading file '{}': {}", filename, e), false),
     }
 }
@@ -157,15 +260,26 @@ pub fn file_editor(
     skip_confirmation: bool,
     debug: bool,
 ) -> (String, bool) {
-    let file_path = PathBuf::from(get_sandbox_root()).join(filename);
+    let file_path = match resolve_sandbox_path(filename) {
+        Ok(p) => p,
+        Err(e) => return (e, false),
+    };
 
-    crate::utils::log_to_file(debug, &format!("File editor: subcommand={}, filename={}", subcommand, filename));
+    crate::utils::log_to_file(
+        debug,
+        &format!(
+            "File editor: subcommand={}, filename={}",
+            subcommand, filename
+        ),
+    );
 
     let (result, rejected) = match subcommand {
         "read" => handle_read(&file_path, filename),
         "write" => handle_write(&file_path, filename, data, skip_confirmation),
         "search" => handle_search(&file_path, filename, data),
-        "search_and_replace" => handle_search_and_replace(&file_path, filename, data, replacement, skip_confirmation),
+        "search_and_replace" => {
+            handle_search_and_replace(&file_path, filename, data, replacement, skip_confirmation)
+        }
         "apply_diff" => handle_apply_diff(&file_path, filename, data, skip_confirmation),
         _ => (format!("Error: Unknown subcommand '{}'", subcommand), false),
     };
@@ -175,3 +289,42 @@ pub fn file_editor(
     (result, rejected)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reject_path_traversal_parent() {
+        let result = resolve_sandbox_path("../../etc/passwd");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("traversal") || err.contains("denied"));
+    }
+
+    #[test]
+    fn test_reject_path_traversal_nested() {
+        let result = resolve_sandbox_path("foo/../../etc/shadow");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_reject_absolute_path() {
+        let result = resolve_sandbox_path("/etc/passwd");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_accept_simple_filename() {
+        let test_file = "test_resolve_sandbox_path.tmp";
+        std::fs::write(test_file, "test").unwrap();
+        let result = resolve_sandbox_path(test_file);
+        assert!(result.is_ok());
+        std::fs::remove_file(test_file).ok();
+    }
+
+    #[test]
+    fn test_accept_subdirectory() {
+        let result = resolve_sandbox_path("Cargo.toml");
+        assert!(result.is_ok());
+    }
+}

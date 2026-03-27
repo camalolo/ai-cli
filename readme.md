@@ -16,14 +16,21 @@ AI CLI is a Rust application that acts as a provider-agnostic AI assistant withi
 
 ## Modules
 
-*   `src/main.rs`: Contains the main application logic, including the chat interface, tool execution, and API interaction.
-*   `src/config.rs`: Handles configuration loading and provider-specific settings.
-*   `src/search.rs`: Implements the online search functionality using the Tavily Search API.
-*   `src/command.rs`: Handles system command execution with sandboxing and security considerations.
-*   `src/email.rs`: Manages email sending functionality with SMTP support.
-*   `src/alpha_vantage.rs`: Provides integration with the Alpha Vantage API for financial data.
-*   `src/file_edit.rs`: Implements file editing capabilities including reading, writing, searching, and applying diffs.
-*   `src/spinner.rs`: Provides a loading spinner for visual feedback during operations.
+*   `src/main.rs`: Application entry point, argument parsing, and interactive loop.
+*   `src/config.rs`: Configuration loading from `~/.aicli.conf` and environment variables (prefixed with `AICLI_`).
+*   `src/chat.rs`: LLM API client with conversation history management, retry logic, and tool definitions.
+*   `src/tools.rs`: Tool call dispatch, response display with Markdown rendering, and output normalization.
+*   `src/search.rs`: Online search functionality using the Tavily Search API.
+*   `src/command.rs`: System command execution with sandboxing (bubblewrap on Linux).
+*   `src/email.rs`: Email sending functionality with SMTP support.
+*   `src/alpha_vantage.rs`: Integration with the Alpha Vantage API for financial data.
+*   `src/file_edit.rs`: File editing capabilities (read, write, search, search and replace, apply diff) with path validation.
+*   `src/scrape.rs`: URL content scraping with summarization.
+*   `src/shell.rs`: Shell detection and interactive shell mode.
+*   `src/sandbox.rs`: Sandbox root directory management.
+*   `src/patch.rs`: Patch/diff application utility.
+*   `src/http.rs`: Shared async HTTP client.
+*   `src/utils.rs`: Shared utilities (logging, text summarization, retry, user confirmation).
 
 ## Configuration Setup
 
@@ -103,6 +110,7 @@ API_KEY=your_api_key_here
 *   `SENDER_EMAIL`: The email address to use as the sender (optional, defaults to DESTINATION_EMAIL)
 *   `TAVILY_API_KEY`: Your API key for the Tavily Search API
 *   `ALPHA_VANTAGE_API_KEY`: Your API key for the Alpha Vantage API
+*   Environment variables can override config file values by prefixing with `AICLI_`. For example, `AICLI_API_KEY` overrides `API_KEY`, `AICLI_MODEL` overrides `MODEL`.
 
 ## Usage
 
@@ -152,8 +160,8 @@ AI CLI is designed to work with any OpenAI-compatible API. The following provide
 ### Provider-Specific Notes
 
 #### Google Gemini
-- Uses query parameter authentication (`?key=API_KEY`)
-- Endpoint format: `{base_url}/{version}/models/{model}:generateContent`
+- Uses Bearer header authentication via the `async-openai` crate
+- Endpoint format: `{base_url}/{version}/chat/completions`
 - Full tool calling support
 
 #### OpenAI
@@ -168,17 +176,19 @@ AI CLI is designed to work with any OpenAI-compatible API. The following provide
 
 ## Debug Mode
 
-Run with the `--debug` flag to see configuration details:
+Run with the `--debug` flag to log configuration details and API call information to `debug.log`:
 
 ```bash
 cargo run -- --debug
 ```
 
-This will display:
-- AI provider configuration
+This will log to `debug.log` in the current directory:
+- AI provider configuration (API base URL, version, model, masked API key)
 - API endpoint being used
-- Authentication method
-- SMTP settings
+- SMTP configuration (server, credentials, email addresses)
+- All LLM API calls and responses
+- Tool calls and their results
+- Command execution and output
 
 ## Troubleshooting
 

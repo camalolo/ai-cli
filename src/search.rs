@@ -44,7 +44,7 @@ async fn perform_search(query: &str, api_key: &str, include_answer: bool, includ
                 if let Some(answer) = response.answer {
                     let final_answer = if answer_mode == "basic" && answer.len() > 200 {
                         crate::utils::log_to_file(debug, &format!("Summarizing answer from {} to 3 sentences", answer.len()));
-                        crate::tools::summarize_text(&answer, 3)
+                        crate::utils::summarize_text(&answer, 3)
                     } else {
                         answer
                     };
@@ -55,7 +55,7 @@ async fn perform_search(query: &str, api_key: &str, include_answer: bool, includ
                         .collect::<Vec<&str>>()
                         .join("\n\n");
                     crate::utils::log_to_file(debug, &format!("Synthesizing answer from {} search results", response.results.len()));
-                    let synthesized_answer = crate::tools::summarize_text(&combined_content, 3);
+                    let synthesized_answer = crate::utils::summarize_text(&combined_content, 3);
                     output_parts.push(synthesized_answer);
                 } else {
                     output_parts.push("No answer generated.".to_string());

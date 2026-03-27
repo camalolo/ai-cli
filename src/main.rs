@@ -59,7 +59,7 @@ async fn handle_llm_response(
 async fn send_llm_input(chat_manager: Arc<Mutex<ChatManager>>, llm_input: String, args: &Args, always_approve: &Arc<AtomicBool>) -> Result<()> {
     match chat_manager.lock().await.send_message(&llm_input, false, args.debug).await {
         Ok(response) => {
-            handle_llm_response(&response, chat_manager.clone(), args.debug, false, false, false, always_approve).await?;
+            handle_llm_response(&response, chat_manager.clone(), args.debug, false, false, true, always_approve).await?;
         },
         Err(e) => print_error(&format!("Error: {}", e)),
     }
@@ -104,7 +104,7 @@ async fn handle_user_input(
     if let Some(command) = user_input.strip_prefix('!') {
         let command: &str = command.trim();
          if command.is_empty() {
-            let output = interactive_shell(args.debug);
+             let output = interactive_shell(args.debug)?;
          let llm_input = format!("User ran interactive shell session with output:\n{}", output);
          send_llm_input(chat_manager.clone(), llm_input, args, always_approve).await?;
          } else {
@@ -202,10 +202,14 @@ async fn run_interactive_loop(chat_manager: Arc<Mutex<ChatManager>>, args: &Args
     println!();
 
     // Initialize rustyline editor
-    let mut rl = DefaultEditor::new().expect("Failed to create readline editor");
+    let mut rl = DefaultEditor::new().map_err(|e| anyhow::anyhow!("Failed to create readline editor: {}", e))?;
+
+    let mut cached_git_branch: Option<String> = None;
+    let mut prompt_count: usize = 0;
 
     // Main input loop with rustyline
     loop {
+        prompt_count += 1;
         let conv_length: usize = chat_manager.lock().await
             .get_history()
             .iter()
@@ -214,13 +218,17 @@ async fn run_interactive_loop(chat_manager: Arc<Mutex<ChatManager>>, args: &Args
             .sum();
 
         let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).display().to_string();
-        let git_branch = Command::new("git")
-            .args(["branch", "--show-current"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        // Refresh git branch cache every 10 iterations to avoid subprocess overhead
+        if cached_git_branch.is_none() || prompt_count % 10 == 0 {
+            cached_git_branch = Command::new("git")
+                .args(["branch", "--show-current"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        }
+        let git_branch = cached_git_branch.as_deref();
         let mut prompt_parts = vec![current_dir];
         if let Some(branch) = git_branch {
             prompt_parts.push(format!("[{}]", branch));

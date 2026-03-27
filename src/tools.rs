@@ -15,7 +15,12 @@ use crate::alpha_vantage::alpha_vantage_query;
 use crate::file_edit::file_editor;
 use crate::chat::ChatManager;
 use crate::utils::{confirm_with_always, get_opt_bool, get_opt_str};
+use std::sync::LazyLock;
 use anyhow::{anyhow, Result};
+
+static MULTI_NEWLINE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\n{3,}").unwrap()
+});
 
 pub fn process_execute_command(args: &Value, debug: bool, allow_commands: bool, always_approve: &Arc<AtomicBool>) -> (String, bool) {
     let command = args.get("command").and_then(|c| c.as_str());
@@ -50,8 +55,10 @@ pub async fn process_search_online(args: &Value, chat_manager: &Arc<Mutex<ChatMa
     let include_results = get_opt_bool(args, "include_results", false);
     let answer_mode = get_opt_str(args, "answer_mode", "basic");
     if let Some(q) = query {
-        let manager = chat_manager.lock().await;
-        let api_key = manager.get_tavily_api_key().to_string();
+        let api_key = {
+            let manager = chat_manager.lock().await;
+            manager.get_tavily_api_key().to_string()
+        };
         let result = search_online(q, &api_key, include_results, &answer_mode, debug).await;
         (tool_result("search_online", &result), false)
     } else {
@@ -76,12 +83,10 @@ pub async fn process_send_email(args: &Value, chat_manager: &Arc<Mutex<ChatManag
 }
 
 /// Normalizes LLM output text by removing excessive whitespace and ensuring consistent formatting
-fn normalize_output(text: &str) -> String {
+pub(crate) fn normalize_output(text: &str) -> String {
     let trimmed = text.trim();
     let normalized_line_endings = trimmed.replace("\r\n", "\n").replace('\r', "\n");
-    // Use regex to limit consecutive newlines to 2
-    let re = Regex::new(r"\n{3,}").unwrap();
-    let limited_newlines = re.replace_all(&normalized_line_endings, "\n\n");
+    let limited_newlines = MULTI_NEWLINE_RE.replace_all(&normalized_line_endings, "\n\n");
     limited_newlines.trim_end().to_string()
 }
 
@@ -106,13 +111,6 @@ where
         Ok(result) => (tool_result(tool_name, &result), false),
         Err(e) => (tool_error(tool_name, &e.to_string()), false),
     }
-}
-
-pub fn summarize_text(text: &str, num_sentences: usize) -> String {
-    let mut summariser = pithy::Summariser::new();
-    summariser.add_raw_text("content".to_string(), text.to_string(), ".", 10, 500, false);
-    let top_sentences = summariser.approximate_top_sentences(num_sentences, 0.3, 0.1);
-    top_sentences.into_iter().map(|s| s.text).collect::<Vec<_>>().join(" ")
 }
 
 /// Displays normalized LLM output with Markdown rendering
@@ -150,6 +148,36 @@ pub fn display_response(response: &Value) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_output_trailing_whitespace() {
+        assert_eq!(normalize_output("hello  \n\n"), "hello");
+    }
+
+    #[test]
+    fn test_normalize_output_excessive_newlines() {
+        assert_eq!(normalize_output("hello\n\n\n\nworld"), "hello\n\nworld");
+    }
+
+    #[test]
+    fn test_normalize_output_crlf() {
+        assert_eq!(normalize_output("hello\r\nworld"), "hello\nworld");
+    }
+
+    #[test]
+    fn test_normalize_output_empty() {
+        assert_eq!(normalize_output(""), "");
+    }
+
+    #[test]
+    fn test_normalize_output_preserves_double_newline() {
+        assert_eq!(normalize_output("hello\n\nworld"), "hello\n\nworld");
     }
 }
 
@@ -233,18 +261,37 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                  }
                 "send_email" => {
                     let subject = get_opt_str(&args, "subject", "unknown");
-                    println!("ai-cli is sending email: {}", subject.color(Color::Cyan).bold());
-                    let (result, rejected) = process_send_email(&args, chat_manager, debug).await;
-                    tool_results.push((tool_call_id, result));
-                    if rejected { rejection_occurred = true; }
+                    let body_preview = get_opt_str(&args, "body", "").chars().take(100).collect::<String>();
+                    let confirmed = if always_approve.load(Ordering::Relaxed) {
+                        true
+                    } else {
+                        let (result, always) = confirm_with_always(&format!("LLM wants to send email:\n  Subject: {}\n  Body: {}... | Confirm?", subject, body_preview));
+                        if always {
+                            always_approve.store(true, Ordering::Relaxed);
+                            println!("{}", "Always approve mode enabled. All future commands will be auto-approved for this session.".color(Color::Cyan));
+                        }
+                        result
+                    };
+                    if confirmed {
+                        println!("Sending email: {}", subject.color(Color::Cyan).bold());
+                        let (result, rejected) = process_send_email(&args, chat_manager, debug).await;
+                        tool_results.push((tool_call_id, result));
+                        if rejected { rejection_occurred = true; }
+                    } else {
+                        tool_results.push((tool_call_id, tool_result("send_email", "User rejected the email sending.")));
+                        rejection_occurred = true;
+                    }
                 }
                    "alpha_vantage_query" => {
+                       let api_key = {
+                           let manager = chat_manager.lock().await;
+                           manager.get_alpha_vantage_api_key().to_string()
+                       };
                        let result = handle_async_tool_result(async {
                              let function = args.get("function").and_then(|f| f.as_str()).ok_or_else(|| anyhow!("Missing 'function' parameter"))?;
                              let symbol = args.get("symbol").and_then(|s| s.as_str()).ok_or_else(|| anyhow!("Missing 'symbol' parameter"))?;
                              let outputsize = args.get("outputsize").and_then(|s| s.as_str());
                              let limit = args.get("limit").and_then(|l| l.as_u64()).map(|l| l as usize);
-                             let api_key = chat_manager.lock().await.get_alpha_vantage_api_key().to_string();
                              alpha_vantage_query(function, symbol, &api_key, outputsize, limit, debug).await
                        }, "alpha_vantage_query").await;
                        tool_results.push((tool_call_id, result.0));

@@ -41,10 +41,9 @@ pub async fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, ou
     let client = crate::http::create_async_http_client();
 
     let outputsize_param = outputsize.unwrap_or("compact");
-    let url = format!(
-        "https://www.alphavantage.co/query?function={}&symbol={}&apikey={}{}",
-        function, symbol, api_key,
-        if function == "GLOBAL_QUOTE" { "".to_string() } else { format!("&outputsize={}", outputsize_param) }
+    let base_url = format!(
+        "https://www.alphavantage.co/query?function={}&symbol={}",
+        function, symbol
     );
 
     println!(
@@ -57,8 +56,12 @@ pub async fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, ou
 
     crate::utils::log_to_file(debug, &format!("Alpha Vantage Query: function={}, symbol={}, outputsize={}, limit={:?}", function, symbol, outputsize_param, limit));
 
-    let response = client
-        .get(&url)
+    let mut request = client.get(&base_url);
+    request = request.query(&[("apikey", api_key)]);
+    if function != "GLOBAL_QUOTE" {
+        request = request.query(&[("outputsize", outputsize_param)]);
+    }
+    let response = request
         .send()
         .await
         .map_err(|e| anyhow!("Alpha Vantage API request failed: {}", e).context("HTTP request error"))?;
