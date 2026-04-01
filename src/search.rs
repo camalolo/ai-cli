@@ -1,4 +1,3 @@
-use colored::{Color, Colorize};
 use tavily::{Tavily, SearchRequest};
 use tokio::time::{sleep, Duration};
 
@@ -93,11 +92,6 @@ async fn perform_search(query: &str, api_key: &str, include_answer: bool, includ
 
 
 pub async fn search_online(query: &str, api_key: &str, include_results: bool, answer_mode: &str, debug: bool) -> String {
-    println!(
-        "{} {}",
-        "ai-cli is searching online for:".color(Color::Cyan).bold(),
-        query
-    );
     match perform_search(query, api_key, true, include_results, answer_mode, debug).await {
         Ok(result) => result,
         Err(e) => e,

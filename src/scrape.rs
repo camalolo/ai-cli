@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use colored::{Color, Colorize};
 use reqwest::StatusCode;
 use readability::extractor;
 
@@ -81,8 +80,6 @@ async fn read_response_limited(mut resp: reqwest::Response) -> Result<String> {
 }
 
 pub async fn scrape_url(url: &str, mode: &str, debug: bool) -> Result<String> {
-    println!("{} {}", "ai-cli is reading:".color(Color::Cyan).bold(), url);
-
     crate::utils::log_to_file(debug, &format!("Scraping URL: {}", url));
 
     let parsed_url = validate_url_scheme(url)?;

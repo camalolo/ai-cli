@@ -1,5 +1,3 @@
-use colored::Color;
-use colored::Colorize;
 use anyhow::{anyhow, Result};
 use serde_json::{Value, Map};
 use regex::Regex;
@@ -44,14 +42,6 @@ pub async fn alpha_vantage_query(function: &str, symbol: &str, api_key: &str, ou
     let base_url = format!(
         "https://www.alphavantage.co/query?function={}&symbol={}",
         function, symbol
-    );
-
-    println!(
-        "{} {}",
-        "ai-cli is querying alpha vantage for:"
-            .color(Color::Cyan)
-            .bold(),
-        symbol
     );
 
     crate::utils::log_to_file(debug, &format!("Alpha Vantage Query: function={}, symbol={}, outputsize={}, limit={:?}", function, symbol, outputsize_param, limit));

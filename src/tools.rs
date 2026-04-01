@@ -1,6 +1,7 @@
 use colored::{Color, Colorize};
 use serde_json::{json, Value};
 use regex::Regex;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
@@ -22,10 +23,10 @@ static MULTI_NEWLINE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\n{3,}").unwrap()
 });
 
-pub async fn process_execute_command(args: &Value, debug: bool, allow_commands: bool, always_approve: &Arc<AtomicBool>) -> (String, bool) {
+pub async fn process_execute_command(args: &Value, debug: bool, allow_commands: bool, always_approve: &Arc<AtomicBool>, allowed_tools: &HashSet<String>) -> (String, bool) {
     let command = args.get("command").and_then(|c| c.as_str());
     if let Some(cmd) = command {
-        let confirmed = if allow_commands || always_approve.load(Ordering::Relaxed) {
+        let confirmed = if allow_commands || always_approve.load(Ordering::Relaxed) || allowed_tools.contains("execute_command") || allowed_tools.contains("commands") {
             true
         } else {
             let (result, always) = confirm_with_always(&format!("LLM wants to execute command: {} | Confirm?", cmd));
@@ -225,7 +226,7 @@ fn extract_tool_calls(response: &Value) -> Vec<(String, String, Value)> {
         .collect()
 }
 
-pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool, quiet: bool, allow_commands: bool, always_approve: &Arc<AtomicBool>) -> Result<()> {
+pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatManager>>, debug: bool, quiet: bool, allow_commands: bool, always_approve: &Arc<AtomicBool>, allowed_tools: &HashSet<String>) -> Result<()> {
     let mut current_response = response.clone();
 
     loop {
@@ -243,7 +244,7 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
         for (tool_call_id, func_name, args) in tool_calls {
             match func_name.as_str() {
                 "execute_command" => {
-                    let (result, rejected) = process_execute_command(&args, debug, allow_commands, always_approve).await;
+                    let (result, rejected) = process_execute_command(&args, debug, allow_commands, always_approve, allowed_tools).await;
                     tool_results.push((tool_call_id, result));
                     if rejected { rejection_occurred = true; }
                 }
@@ -264,7 +265,7 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                 "send_email" => {
                     let subject = get_opt_str(&args, "subject", "unknown");
                     let body_preview = get_opt_str(&args, "body", "").chars().take(100).collect::<String>();
-                    let confirmed = if always_approve.load(Ordering::Relaxed) {
+                    let confirmed = if always_approve.load(Ordering::Relaxed) || allowed_tools.contains("send_email") || allowed_tools.contains("email") {
                         true
                     } else {
                         let (result, always) = confirm_with_always(&format!("LLM wants to send email:\n  Subject: {}\n  Body: {}... | Confirm?", subject, body_preview));
@@ -307,7 +308,7 @@ pub async fn process_tool_calls(response: &Value, chat_manager: &Arc<Mutex<ChatM
                     let replacement = args.get("replacement").and_then(|r| r.as_str());
 
                     if let (Some(subcmd), Some(fname)) = (subcommand, filename_opt) {
-                        let skip_confirmation = matches!(subcmd, "read" | "search"); // Only skip for non-destructive ops
+                        let skip_confirmation = matches!(subcmd, "read" | "search") || allowed_tools.contains("file_editor") || allowed_tools.contains("files");
                          let (result, rejected) = file_editor(subcmd, fname, data, replacement, skip_confirmation, debug);
                          tool_results.push((tool_call_id, tool_result("file_editor", &result)));
                          if rejected { rejection_occurred = true; }

@@ -1,6 +1,7 @@
 use clap::Parser;
 use anyhow::Result;
 use colored::{Color, Colorize};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex;
@@ -46,13 +47,14 @@ async fn handle_llm_response(
     allow_commands: bool,
     process_tools: bool,
     always_approve: &Arc<AtomicBool>,
+    allowed_tools: &HashSet<String>,
 ) -> Result<()> {
     display_response(response);
     if !quiet {
         crate::tools::add_block_spacing();
     }
     if process_tools {
-        process_tool_calls(response, &chat_manager, debug, quiet, allow_commands, always_approve).await?;
+        process_tool_calls(response, &chat_manager, debug, quiet, allow_commands, always_approve, allowed_tools).await?;
     }
     Ok(())
 }
@@ -69,7 +71,7 @@ async fn send_llm_input(chat_manager: Arc<Mutex<ChatManager>>, llm_input: String
         Ok(llm_result) => {
             // Re-acquire lock to update history
             chat_manager.lock().await.apply_llm_result(&llm_result);
-            handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, false, false, true, always_approve).await?;
+            handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, false, false, true, always_approve, &HashSet::new()).await?;
         },
         Err(e) => print_error(&format!("Error: {}", e)),
     }
@@ -145,7 +147,7 @@ async fn handle_user_input(
             chat_manager.lock().await.apply_llm_result(&llm_result);
 
             println!(); // Add blank line before response
-            if let Err(e) = handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, false, false, true, always_approve).await {
+            if let Err(e) = handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, false, false, true, always_approve, &HashSet::new()).await {
                 print_error(&format!("Error processing tool calls: {}", e));
             }
     }
@@ -175,7 +177,7 @@ async fn load_and_display_config(debug: bool) -> Result<Config> {
     Ok(config)
 }
 
-async fn handle_single_prompt_mode(chat_manager: Arc<Mutex<ChatManager>>, args: &Args, always_approve: &Arc<AtomicBool>) -> Result<()> {
+async fn handle_single_prompt_mode(chat_manager: Arc<Mutex<ChatManager>>, args: &Args, always_approve: &Arc<AtomicBool>, allowed_tools: &HashSet<String>) -> Result<()> {
     let prompt = args.prompt.as_ref().unwrap();
     // Lock, push user message, extract data, release lock
     let llm_data = {
@@ -201,7 +203,7 @@ async fn handle_single_prompt_mode(chat_manager: Arc<Mutex<ChatManager>>, args: 
     };
     // Re-acquire lock to update history
     chat_manager.lock().await.apply_llm_result(&llm_result);
-    if let Err(e) = handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, true, args.allow_commands, true, always_approve).await {
+    if let Err(e) = handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, true, args.allow_commands, true, always_approve, allowed_tools).await {
         print_error(&format!("Error processing tool calls: {}", e));
     }
     chat_manager.lock().await.cleanup(false);
@@ -324,6 +326,10 @@ struct Args {
     #[arg(long)]
     allow_commands: bool,
 
+    /// Comma-separated list of tools to auto-approve without confirmation (e.g., email,file_editor,commands)
+    #[arg(long)]
+    allow_tools: Option<String>,
+
     /// Use the old REPL interface instead of the TUI
     #[arg(long)]
     no_tui: bool,
@@ -342,8 +348,12 @@ async fn main() -> Result<(), anyhow::Error> {
     // Create atomic bool for "always approve" mode (session-scoped)
     let always_approve = Arc::new(AtomicBool::new(false));
 
+    let allowed_tools: HashSet<String> = args.allow_tools.as_ref()
+        .map(|s| s.split(',').map(|t| t.trim().to_lowercase()).collect())
+        .unwrap_or_default();
+
     if args.prompt.is_some() {
-        handle_single_prompt_mode(chat_manager.clone(), &args, &always_approve).await?;
+        handle_single_prompt_mode(chat_manager.clone(), &args, &always_approve, &allowed_tools).await?;
         return Ok(());
     }
 
