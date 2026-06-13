@@ -1,26 +1,17 @@
 use clap::Parser;
 use anyhow::Result;
-use colored::{Color, Colorize};
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use tokio::sync::Mutex;
-use rustyline::DefaultEditor;
-use rustyline::error::ReadlineError;
+use std::io::{self, Write, IsTerminal};
 use build_time::build_time_local;
-use tokio::process::Command;
 
 mod config;
 use config::Config;
-use config::mask_value;
 
-mod chat;
+mod agent;
 mod shell;
 mod tools;
 mod search;
 mod scrape;
 
-mod tui;
 mod patch;
 mod command;
 mod email;
@@ -30,288 +21,12 @@ mod sandbox;
 mod http;
 mod utils;
 
-use crate::chat::ChatManager;
-use crate::tools::{display_response, process_tool_calls};
-use crate::utils::{log_to_file, print_error, clear_debug_file};
-use crate::shell::interactive_shell;
-use crate::command::execute_command;
-use sandbox::get_sandbox_root;
-
-const COMPILE_TIME: &str = build_time_local!("%Y-%m-%d %H:%M:%S");
-
-async fn handle_llm_response(
-    response: &serde_json::Value,
-    chat_manager: Arc<Mutex<ChatManager>>,
-    debug: bool,
-    quiet: bool,
-    allow_commands: bool,
-    process_tools: bool,
-    always_approve: &Arc<AtomicBool>,
-    allowed_tools: &HashSet<String>,
-) -> Result<()> {
-    display_response(response);
-    if !quiet {
-        crate::tools::add_block_spacing();
-    }
-    if process_tools {
-        process_tool_calls(response, &chat_manager, debug, quiet, allow_commands, always_approve, allowed_tools).await?;
-    }
-    Ok(())
-}
-
-async fn send_llm_input(chat_manager: Arc<Mutex<ChatManager>>, llm_input: String, args: &Args, always_approve: &Arc<AtomicBool>) -> Result<()> {
-    // Lock, push user message, extract data, release lock
-    let llm_data = {
-        let mut manager = chat_manager.lock().await;
-        manager.push_user_message(&llm_input, args.debug);
-        manager.prepare_llm_call()
-    };
-    // LLM call without holding the lock
-    match crate::chat::call_llm_api(&llm_data, false, args.debug).await {
-        Ok(llm_result) => {
-            // Re-acquire lock to update history
-            chat_manager.lock().await.apply_llm_result(&llm_result);
-            handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, false, false, true, always_approve, &HashSet::new()).await?;
-        },
-        Err(e) => print_error(&format!("Error: {}", e)),
-    }
-    Ok(())
-}
-
-async fn handle_user_input(
-    user_input: &str,
-    rl: &mut DefaultEditor,
-    chat_manager: Arc<Mutex<ChatManager>>,
-    args: &Args,
-    always_approve: &Arc<AtomicBool>,
-) -> Result<bool> {
-    // Add to history (skip empty lines and special commands)
-    let input_lower = user_input.to_lowercase();
-    if !user_input.is_empty() && !input_lower.starts_with("exit") && !input_lower.starts_with("clear") {
-        rl.add_history_entry(user_input).ok();
-    }
-
-    match input_lower.as_str() {
-        "exit" => {
-            println!("{}", "Goodbye!".color(Color::Cyan).bold());
-            return Ok(false);
-        }
-        "clear" => {
-            chat_manager.lock().await.create_chat();
-            println!(
-                "{}",
-                "Conversation cleared! Starting fresh.".color(Color::Cyan)
-            );
-            println!();
-            return Ok(true);
-        }
-        "" => {
-            println!("{}", "Please enter a command or message.".color(Color::Red));
-            println!();
-            return Ok(true);
-        }
-        _ => {}
-    }
-
-    if let Some(command) = user_input.strip_prefix('!') {
-        let command: &str = command.trim();
-         if command.is_empty() {
-             let output = interactive_shell(args.debug).await?;
-         let llm_input = format!("User ran interactive shell session with output:\n{}", output);
-         send_llm_input(chat_manager.clone(), llm_input, args, always_approve).await?;
-         } else {
-            let output = execute_command(command, args.debug).await.unwrap_or_else(|e| e.to_string());
-            let llm_input = format!("User ran command '!{}' with output: {}", command, output);
-            println!("{}", output);
-            send_llm_input(chat_manager.clone(), llm_input, args, always_approve).await?;
-         }
-     } else {
-            // Lock, push user message, extract data, release lock
-            let llm_data = {
-                let mut manager = chat_manager.lock().await;
-                manager.push_user_message(user_input, args.debug);
-                manager.prepare_llm_call()
-            };
-            // LLM call without holding the lock
-            let llm_result = match crate::chat::call_llm_api(&llm_data, false, args.debug).await {
-                Ok(result) => result,
-                Err(e) => {
-                    println!(
-                        "{}",
-                        format!("Error: A generative AI error occurred: {}", e).color(Color::Red)
-                    );
-                    return Ok(true);
-                }
-            };
-            // Re-acquire lock to update history
-            chat_manager.lock().await.apply_llm_result(&llm_result);
-
-            println!(); // Add blank line before response
-            if let Err(e) = handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, false, false, true, always_approve, &HashSet::new()).await {
-                print_error(&format!("Error processing tool calls: {}", e));
-            }
-    }
-    Ok(true)
-}
-
-async fn load_and_display_config(debug: bool) -> Result<Config> {
-    let config = Config::load()?;
-
-    if debug {
-        log_to_file(debug, "=== AI Provider Configuration ===");
-        log_to_file(debug, &format!("API Base URL: {}", config.api_base_url));
-        log_to_file(debug, &format!("API Version: {}", config.api_version));
-        log_to_file(debug, &format!("Model: {}", config.model));
-        log_to_file(debug, &format!("API Key: {}***", &config.api_key.chars().take(4).collect::<String>()));
-        log_to_file(debug, &format!("Endpoint: {}", config.get_api_endpoint()));
-        log_to_file(debug, "Auth Method: Header (Bearer)");
-        log_to_file(debug, "================================");
-        log_to_file(debug, "=== SMTP Configuration ===");
-        log_to_file(debug, &format!("SMTP_SERVER_IP: {}", config.smtp_server));
-        log_to_file(debug, &format!("SMTP_USERNAME: {}", mask_value(&config.smtp_username, false)));
-        log_to_file(debug, &format!("SMTP_PASSWORD: {}", mask_value(&config.smtp_password, true)));
-        log_to_file(debug, &format!("DESTINATION_EMAIL: {}", mask_value(&config.destination_email, false)));
-        log_to_file(debug, &format!("SENDER_EMAIL: {}", mask_value(&config.sender_email, false)));
-        log_to_file(debug, "==========================");
-    }
-    Ok(config)
-}
-
-async fn handle_single_prompt_mode(chat_manager: Arc<Mutex<ChatManager>>, args: &Args, always_approve: &Arc<AtomicBool>, allowed_tools: &HashSet<String>) -> Result<()> {
-    let prompt = args.prompt.as_ref().unwrap();
-    // Lock, push user message, extract data, release lock
-    let llm_data = {
-        let mut manager = chat_manager.lock().await;
-        manager.push_user_message(prompt, args.debug);
-        manager.prepare_llm_call()
-    };
-    // LLM call without holding the lock
-    let llm_result = match crate::chat::call_llm_api(&llm_data, true, args.debug).await {
-        Ok(result) => {
-            if args.debug {
-                log_to_file(args.debug, "=== Raw Response ===");
-                log_to_file(args.debug, &format!("{:?}", result.response));
-                log_to_file(args.debug, "===================");
-            }
-            result
-        },
-        Err(e) => {
-            print_error(&format!("Error: {}", e));
-            chat_manager.lock().await.cleanup(false);
-            return Err(e);
-        }
-    };
-    // Re-acquire lock to update history
-    chat_manager.lock().await.apply_llm_result(&llm_result);
-    if let Err(e) = handle_llm_response(&llm_result.response, chat_manager.clone(), args.debug, true, args.allow_commands, true, always_approve, allowed_tools).await {
-        print_error(&format!("Error processing tool calls: {}", e));
-    }
-    chat_manager.lock().await.cleanup(false);
-    Ok(())
-}
-
-async fn run_interactive_loop(chat_manager: Arc<Mutex<ChatManager>>, args: &Args, always_approve: &Arc<AtomicBool>) -> Result<()> {
-    println!(
-        "{}",
-        "Welcome to AI CLI! Chat with me (type 'exit' to quit, 'clear' to reset conversation)."
-            .color(Color::Cyan)
-            .bold()
-    );
-    println!(
-        "{}",
-        format!("Version: {}", COMPILE_TIME).color(Color::Cyan)
-    );
-    println!(
-        "{}",
-        format!("Working in sandbox: {}", *get_sandbox_root()).color(Color::Cyan)
-    );
-    println!(
-        "{}",
-        "Use !command to run shell commands directly (e.g., !ls or !dir). Use ! alone to enter interactive shell mode.".color(Color::Cyan)
-    );
-    println!();
-
-    // Initialize rustyline editor
-    let mut rl = DefaultEditor::new().map_err(|e| anyhow::anyhow!("Failed to create readline editor: {}", e))?;
-
-    let mut cached_git_branch: Option<String> = None;
-    let mut prompt_count: usize = 0;
-
-    // Main input loop with rustyline
-    loop {
-        prompt_count += 1;
-        let conv_length: usize = chat_manager.lock().await
-            .get_history()
-            .iter()
-            .filter_map(|msg| msg.get("content")?.as_str())
-            .map(|s| s.len())
-            .sum();
-
-        let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).display().to_string();
-        // Refresh git branch cache every 10 iterations to avoid subprocess overhead
-        if cached_git_branch.is_none() || prompt_count % 10 == 0 {
-            cached_git_branch = Command::new("git")
-                .args(["branch", "--show-current"])
-                .output()
-                .await
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-        }
-        let git_branch = cached_git_branch.as_deref();
-        let mut prompt_parts = vec![current_dir];
-        if let Some(branch) = git_branch {
-            prompt_parts.push(format!("[{}]", branch));
-        }
-        prompt_parts.push(format!("[{}]", conv_length));
-        let base_prompt = format!("{} > ", prompt_parts.join(" "));
-        let prompt = if cfg!(target_os = "windows") {
-            // On Windows, avoid colored prompts due to compatibility issues
-            base_prompt
-        } else {
-            base_prompt.color(Color::Green).bold().to_string()
-        };
-
-        let readline = rl.readline(&prompt);
-
-        match readline {
-            Ok(line) => {
-                let user_input: &str = line.trim();
-
-                match handle_user_input(user_input, &mut rl, chat_manager.clone(), args, always_approve).await {
-                    Ok(true) => continue,
-                    Ok(false) => break,
-                    Err(e) => {
-                        print_error(&format!("Error: {}", e));
-                        continue;
-                    }
-                }
-            }
-            Err(ReadlineError::Interrupted) => {
-                // Handle Ctrl-C
-                println!("{}", "Interrupted".color(Color::Yellow));
-                continue;
-            }
-            Err(ReadlineError::Eof) => {
-                // Handle Ctrl-D
-                println!("{}", "Goodbye!".color(Color::Cyan).bold());
-                break;
-            }
-            Err(err) => {
-                print_error(&format!("Readline error: {}", err));
-                continue;
-            }
-        }
-    }
-
-    chat_manager.lock().await.cleanup(false);
-
-    Ok(())
-}
+use agent::AppAgent;
+use crate::utils::{log_to_file, clear_debug_file};
 
 #[derive(Parser)]
 #[command(name = "ai-cli")]
+#[command(version = concat!(env!("CARGO_PKG_VERSION"), " (", build_time_local!("%Y-%m-%d %H:%M:%S"), ")"))]
 #[command(about = "A provider-agnostic AI assistant for coding tasks")]
 struct Args {
     /// Single prompt to send to the LLM and exit
@@ -321,46 +36,95 @@ struct Args {
     /// Enable debug output for troubleshooting
     #[arg(long)]
     debug: bool,
-
-    /// Allow LLM to execute commands without user confirmation in single prompt mode
-    #[arg(long)]
-    allow_commands: bool,
-
-    /// Comma-separated list of tools to auto-approve without confirmation (e.g., email,file_editor,commands)
-    #[arg(long)]
-    allow_tools: Option<String>,
-
-    /// Use the old REPL interface instead of the TUI
-    #[arg(long)]
-    no_tui: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let args = Args::parse();
-
     clear_debug_file(args.debug);
 
-    let config = load_and_display_config(args.debug).await?;
+    let config = Config::load()?;
 
-    let chat_manager = Arc::new(Mutex::new(ChatManager::new(config)));
-    
-    // Create atomic bool for "always approve" mode (session-scoped)
-    let always_approve = Arc::new(AtomicBool::new(false));
+    if args.debug {
+        log_to_file(args.debug, "=== AI Provider Configuration ===");
+        log_to_file(args.debug, &format!("Provider: {}", config.provider));
+        log_to_file(args.debug, &format!("API Base URL: {}", config.api_base_url));
+        log_to_file(args.debug, &format!("Model: {}", config.model));
+        log_to_file(args.debug, &format!("API Key: {}***", &config.api_key.chars().take(4).collect::<String>()));
+        log_to_file(args.debug, "================================");
+    }
 
-    let allowed_tools: HashSet<String> = args.allow_tools.as_ref()
-        .map(|s| s.split(',').map(|t| t.trim().to_lowercase()).collect())
-        .unwrap_or_default();
+    let mut agent = AppAgent::new(config)?;
 
-    if args.prompt.is_some() {
-        handle_single_prompt_mode(chat_manager.clone(), &args, &always_approve, &allowed_tools).await?;
+    if let Some(prompt) = args.prompt {
+        // One-shot mode — stream response and exit
+        match agent.stream_prompt(&prompt).await {
+            Ok(_response) => {}
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
         return Ok(());
     }
 
-    if args.no_tui {
-        run_interactive_loop(chat_manager, &args, &always_approve).await?;
-    } else {
-        crate::tui::run_tui(chat_manager.clone(), args.debug, always_approve).await?;
+    // Interactive REPL mode
+    let is_tty = io::stdin().is_terminal();
+    if is_tty {
+        println!("ai-cli {} — model: {} — type /exit to quit",
+            env!("CARGO_PKG_VERSION"),
+            agent.model_name());
+    }
+
+    loop {
+        if is_tty {
+            print!("> ");
+            io::stdout().flush()?;
+        }
+
+        let mut input = String::new();
+        match io::stdin().read_line(&mut input) {
+            Ok(0) => break, // EOF (Ctrl-D)
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Input error: {}", e);
+                break;
+            }
+        }
+
+        let line = input.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        match line {
+            "/exit" | "/quit" | "/q" => break,
+            "/clear" => {
+                agent.clear_history();
+                println!("History cleared.");
+                continue;
+            }
+            "/model" => {
+                println!("{}", agent.model_name());
+                continue;
+            }
+            _ if line.starts_with('/') => {
+                eprintln!("Unknown command: {} (try /exit, /clear, /model)", line);
+                continue;
+            }
+            _ => {}
+        }
+
+        match agent.stream_prompt(line).await {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error: {}", e);
+            }
+        }
+
+        if is_tty {
+            println!(); // blank line between turns
+        }
     }
 
     Ok(())

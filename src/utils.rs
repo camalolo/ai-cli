@@ -1,12 +1,7 @@
 use chrono::Utc;
-use colored::{Color, Colorize};
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;
-
-pub fn print_error(message: &str) {
-    println!("{}", message.color(Color::Red));
-}
 
 pub fn truncate_str(s: &str, max_len: usize) -> String {
     if s.chars().count() > max_len {
@@ -37,6 +32,7 @@ pub fn clear_debug_file(debug: bool) {
     }
 }
 
+#[allow(dead_code)]
 pub fn get_opt_str(args: &Value, key: &str, default: &str) -> String {
     args.get(key)
         .and_then(|v| v.as_str())
@@ -44,16 +40,9 @@ pub fn get_opt_str(args: &Value, key: &str, default: &str) -> String {
         .to_string()
 }
 
+#[allow(dead_code)]
 pub fn get_opt_bool(args: &Value, key: &str, default: bool) -> bool {
     args.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
-}
-
-pub fn confirm(prompt: &str) -> bool {
-    dialoguer::Confirm::new()
-        .with_prompt(prompt)
-        .default(false)
-        .interact()
-        .unwrap_or(false)
 }
 
 /// Summarizes text to approximately `num_sentences` sentences using extractive summarization.
@@ -66,31 +55,6 @@ pub fn summarize_text(text: &str, num_sentences: usize) -> String {
         .map(|s| s.text)
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// Prompts user with y/n/a options (yes/no/always)
-/// Returns (confirmed, always) tuple where:
-/// - confirmed: true if user selected yes or always
-/// - always: true if user selected always (approve all commands for this session)
-pub fn confirm_with_always(prompt: &str) -> (bool, bool) {
-    use std::io::{self, Write};
-
-    loop {
-        print!("{} [y/n/a]: ", prompt);
-        io::stdout().flush().unwrap();
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-
-        match input.trim().to_lowercase().as_str() {
-            "y" | "yes" => return (true, false),
-            "n" | "no" => return (false, false),
-            "a" | "always" => return (true, true),
-            _ => {
-                println!("Please enter 'y' for yes, 'n' for no, or 'a' for always.");
-            }
-        }
-    }
 }
 
 #[cfg(test)]

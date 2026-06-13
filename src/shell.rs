@@ -1,7 +1,3 @@
-use crate::command::execute_command;
-use anyhow::Result;
-use colored::{Color, Colorize};
-use rustyline::DefaultEditor;
 use std::env;
 use std::process::Command;
 
@@ -93,32 +89,4 @@ fn detect_unix_shell() -> String {
         }
         _ => shell_name.to_string(),
     }
-}
-
-pub async fn interactive_shell(debug: bool) -> Result<String> {
-    println!(
-        "{}",
-        "Entering interactive shell mode. Type 'exit' to return.".color(Color::Cyan)
-    );
-    let mut accumulated_output = String::new();
-    let mut rl =
-        DefaultEditor::new().map_err(|e| anyhow::anyhow!("Failed to create editor: {}", e))?;
-    loop {
-        let readline = rl.readline("shell> ");
-        match readline {
-            Ok(line) => {
-                let input = line.trim();
-                if input == "exit" {
-                    break;
-                }
-                rl.add_history_entry(input).ok();
-                let output = execute_command(input, debug).await.unwrap_or_else(|e| e.to_string());
-                println!("{}", output.color(Color::Magenta));
-                accumulated_output.push_str(&format!("Command: {}\nOutput: {}\n\n", input, output));
-            }
-            Err(_) => break,
-        }
-    }
-    println!("{}", "Exiting interactive shell mode.".color(Color::Cyan));
-    Ok(accumulated_output)
 }

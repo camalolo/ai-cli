@@ -8,8 +8,10 @@ use std::env;
 #[serde(default)]
 pub struct Config {
     // AI Provider Configuration
+    /// Which LLM provider to use. Supported: "openai", "anthropic", "gemini", "ollama", "deepseek", "openrouter"
+    pub provider: String,
+    /// Custom API base URL. When empty, rig uses the provider's default URL. Only needed for custom endpoints.
     pub api_base_url: String,
-    pub api_version: String,
     pub model: String,
     pub api_key: String,
 
@@ -54,19 +56,13 @@ impl Config {
         Ok(config)
     }
 
-    /// Construct the API endpoint URL - always use OpenAI-compatible format
-    pub fn get_api_endpoint(&self) -> String {
-        // Always use OpenAI-compatible chat/completions endpoint
-        // Google Gemini also supports OpenAI-compatible endpoints
-        format!(
-            "{}/{}/chat/completions",
-            self.api_base_url, self.api_version
-        )
-    }
+    // get_api_endpoint removed — rig handles endpoint routing per provider internally
 }
 
+#[allow(dead_code)]
 const EMPTY_MSG: &str = "<not set>";
 
+#[allow(dead_code)]
 pub fn mask_value(value: &str, mask_empty: bool) -> String {
     if mask_empty {
         if value.is_empty() {
@@ -82,8 +78,8 @@ pub fn mask_value(value: &str, mask_empty: bool) -> String {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            api_base_url: "https://api.openai.com".to_string(),
-            api_version: "v1".to_string(),
+            provider: "openai".to_string(),
+            api_base_url: "".to_string(),
             model: "gpt-4o-mini".to_string(),
             api_key: "".to_string(),
             smtp_server: "localhost".to_string(),
@@ -104,8 +100,8 @@ mod tests {
     #[test]
     fn test_config_default_values() {
         let config = Config::default();
-        assert_eq!(config.api_base_url, "https://api.openai.com");
-        assert_eq!(config.api_version, "v1");
+        assert_eq!(config.provider, "openai");
+        assert_eq!(config.api_base_url, "");
         assert_eq!(config.model, "gpt-4o-mini");
         assert_eq!(config.api_key, "");
         assert_eq!(config.smtp_server, "localhost");
@@ -115,15 +111,6 @@ mod tests {
         assert!(config.sender_email.is_empty());
         assert!(config.tavily_api_key.is_empty());
         assert!(config.alpha_vantage_api_key.is_empty());
-    }
-
-    #[test]
-    fn test_get_api_endpoint() {
-        let config = Config::default();
-        let endpoint = config.get_api_endpoint();
-        assert!(endpoint.contains("api.openai.com"));
-        assert!(endpoint.contains("v1"));
-        assert!(endpoint.contains("chat/completions"));
     }
 
     #[test]

@@ -4,7 +4,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::sandbox::get_sandbox_root;
-use crate::utils::confirm;
 use anyhow::Result;
 
 use crate::patch::apply_patch;
@@ -24,18 +23,51 @@ pub(crate) fn resolve_sandbox_path(filename: &str) -> Result<PathBuf, String> {
         );
     }
 
-    let joined = PathBuf::from(get_sandbox_root()).join(filename);
-    let canonicalized = dunce::canonicalize(&joined)
-        .map_err(|e| format!("Failed to resolve path '{}': {}", filename, e))?;
+    // Reject absolute paths — all paths must be relative to the sandbox root
+    if std::path::Path::new(filename).is_absolute() {
+        return Err("Absolute paths are not allowed. Use a path relative to the sandbox root.".to_string());
+    }
 
     let sandbox_root = dunce::canonicalize(get_sandbox_root())
         .map_err(|e| format!("Failed to resolve sandbox root: {}", e))?;
 
-    if !canonicalized.starts_with(&sandbox_root) {
+    let joined = sandbox_root.join(filename);
+
+    // If the file exists, canonicalize it and check it's within the sandbox.
+    // If it doesn't exist (new file), canonicalize the parent directory instead.
+    let resolved = match dunce::canonicalize(&joined) {
+        Ok(c) => c,
+        Err(_) => {
+            // File doesn't exist — resolve the parent directory
+            let parent = joined
+                .parent()
+                .ok_or_else(|| format!("Invalid path '{}': no parent directory", filename))?;
+
+            let canonical_parent = dunce::canonicalize(parent).map_err(|e| {
+                format!(
+                    "Failed to resolve parent directory for '{}': {}. Ensure the directory exists.",
+                    filename, e
+                )
+            })?;
+
+            if !canonical_parent.starts_with(&sandbox_root) {
+                return Err("Access denied: path resolves outside sandbox".to_string());
+            }
+
+            // Re-append the file name
+            let file_name = joined
+                .file_name()
+                .ok_or_else(|| format!("Invalid path '{}': no file name", filename))?;
+
+            canonical_parent.join(file_name)
+        }
+    };
+
+    if !resolved.starts_with(&sandbox_root) {
         return Err("Access denied: path resolves outside sandbox".to_string());
     }
 
-    Ok(canonicalized)
+    Ok(resolved)
 }
 
 fn confirm_change(
@@ -53,7 +85,9 @@ fn confirm_change(
             Difference::Add(ref s) => println!("\x1b[92m+{}\x1b[0m", s),
         }
     }
-    Ok(confirm("Apply changes?"))
+    // Confirmation is now handled at the TUI hook level (PromptHook)
+    // or auto-approved in single-prompt mode. Always return true here.
+    Ok(true)
 }
 
 fn confirm_and_apply_change(
@@ -459,7 +493,8 @@ mod tests {
         assert!(
             result.contains("traversal")
                 || result.contains("denied")
-                || result.contains("outside sandbox"),
+                || result.contains("outside sandbox")
+                || result.contains("Absolute"),
             "Expected access denied error, got: {}",
             result
         );
